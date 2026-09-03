@@ -1,0 +1,536 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.15cm]{geometry}
+\usepackage[turkish]{babel}
+\usepackage{fontspec}
+\setmainfont{lmroman10-regular.otf}[BoldFont=lmroman10-bold.otf]
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!45!black,
+  urlcolor=blue!55!black,
+  pdftitle={NUCLEO-G491RE BLDC Komutasyon Simülasyonu},
+  pdfauthor={Çalışma Kılavuzu}
+}
+\definecolor{stmblue}{RGB}{0,103,177}
+\definecolor{codebg}{RGB}{245,247,250}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{black!20},
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false
+}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textcolor{stmblue}{NUCLEO-G491RE | BLDC UART Simülasyonu}}
+\rhead{Çalışma Kılavuzu}
+\cfoot{\thepage}
+\setlength{\headheight}{14pt}
+\setlist[itemize]{leftmargin=*,noitemsep,topsep=3pt}
+\setlist[enumerate]{leftmargin=*,topsep=3pt}
+
+\begin{document}
+\pagecolor{white}
+\color{black}
+
+\begin{titlepage}
+  \centering
+  \vspace*{2.4cm}
+  {\Huge\bfseries\textcolor{stmblue}{NUCLEO-G491RE}\par}
+  \vspace{0.35cm}
+  {\LARGE 3 Fazlı BLDC Komutasyon Simülasyonu\par}
+  \vspace{0.25cm}
+  {\Large STM32CubeMX + STM32CubeIDE + ST-LINK VCP + CoolTerm\par}
+  \vfill
+  \begin{tabular}{rl}
+    \textbf{Proje adı:} & \texttt{staj\_motor\_simule\_g491} \\
+    \textbf{Kart:} & NUCLEO-G491RE \\
+    \textbf{MCU:} & STM32G491RET6 \\
+    \textbf{Seri arayüz:} & LPUART1 / ST-LINK Virtual COM Port \\
+    \textbf{Tarih:} & 02 Eylül 2026 \\
+  \end{tabular}
+  \vfill
+  \fbox{\parbox{0.83\textwidth}{\centering
+  Bu doküman, projeyi sıfırdan yeniden oluşturmak, kodun mantığını anlamak,
+  karta yazmak ve CoolTerm'de sonuçları yorumlamak için hazırlanmıştır.}}
+  \vspace*{1.6cm}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{Amaç ve güvenlik sınırı}
+
+Bu uygulama gerçek bir BLDC motoru döndürmez. Bunun yerine üç GPIO pini üzerinde
+BLDC'nin altı adımlı (six-step) komutasyon sırasını canlandırır. Her \textbf{200 ms}
+sonunda A, B ve C fazının durumu değiştirilir; aynı bilgi LPUART1 ile bilgisayara
+gönderilir ve CoolTerm'de metin veya grafik olarak izlenir.
+
+\begin{center}
+\fcolorbox{red!55!black}{red!5}{\parbox{0.88\textwidth}{
+\textbf{Güvenlik:} PA4, PB4 ve PB5 yalnızca 3.3 V mantık çıkışlarıdır. BLDC motoru,
+motor fazını veya MOSFET kapısını bu pinlere doğrudan bağlama. Gerçek sistemde
+3-faz inverter/gate driver, akım ölçümü, koruma ve PWM gerekir. Bu çalışma
+yalnızca komutasyon mantığını güvenli biçimde öğretir.
+}}
+\end{center}
+
+Öğrenilen veri zinciri şöyledir:
+
+\begin{lstlisting}
+Komutasyon tablosu -> GPIO A/B/C -> LPUART1 TX
+                   -> ST-LINK Virtual COM Port -> CoolTerm
+\end{lstlisting}
+
+\section{Gerekli donanım ve yazılım}
+
+\subsection{Gereksinimler}
+\begin{itemize}
+  \item NUCLEO-G491RE geliştirme kartı
+  \item Veri aktarımını destekleyen micro-USB kablo
+  \item macOS çalıştıran bilgisayar
+  \item STM32CubeMX, STM32CubeIDE, CoolTerm
+  \item İsteğe bağlı: STM32CubeProgrammer
+\end{itemize}
+
+\subsection{Nucleo kartı neden işimizi kolaylaştırır?}
+
+Kart üzerindeki ST-LINK V3E iki ayrı iş yapar:
+\begin{enumerate}
+  \item \textbf{SWD}: Firmware yazma ve hata ayıklama,
+  \item \textbf{Virtual COM Port (VCP)}: UART verisini USB üzerinden Mac'e taşıma.
+\end{enumerate}
+
+Bu yüzden ek USB--UART dönüştürücü ve DFU modu gerekmez.
+
+\begin{lstlisting}
+Mac + CoolTerm
+      |  micro-USB veri kablosu
+      v
+NUCLEO üzerindeki ST-LINK V3E
+      |-- SWD <-> PA13 (SWDIO), PA14 (SWCLK): programlama/debug
+      |-- VCP <-> PA2 (LPUART1_TX), PA3 (LPUART1_RX): UART
+      v
+STM32G491RET6
+\end{lstlisting}
+
+\section{STM32CubeMX ile sıfırdan proje oluşturma}
+
+\subsection{Kart seçimi}
+\begin{enumerate}
+  \item STM32CubeMX'i aç.
+  \item \textit{Access to Board Selector} seçeneğini seç.
+  \item Arama alanına \texttt{NUCLEO-G491RE} yaz.
+  \item Kartı seç ve \textit{Start Project} düğmesine bas.
+\end{enumerate}
+
+Kart seçicisini kullanmak önemlidir: CubeMX, kartın ST-LINK ve Virtual COM Port
+bağlantılarını tanır. Yalnız MCU seçilirse fiziksel kart bağlantılarını senin
+doğrulaman gerekir.
+
+\subsection{LPUART alanı kilitli veya gri görünürse}
+
+Kart şablonu bazı pinleri önceden ayırmış olabilir. Sıfırdan açılmış projede
+LPUART1 modu seçilemiyorsa \textit{Pinout} menüsünden \textit{Clear Pinout} veya
+ilgili \textit{Reset Configuration} işlemini kullanıp aşağıdaki ayarları yeniden
+oluştur. Bu işlem mevcut projede rastgele yapılmamalıdır; önceki pin ayarlarını
+silebilir.
+
+\subsection{SYS: Serial Wire debug}
+
+\textit{System Core > SYS} ekranında:
+
+\begin{center}
+\fbox{\texttt{Debug = Serial Wire}}
+\end{center}
+
+Bu seçim SWDIO (PA13) ve SWCLK (PA14) pinlerini ST-LINK programlayıcısına ayırır.
+Bu pinleri başka GPIO işlevi için kullanma. \texttt{No Debug} seçimi, debug ve
+tekrar programlamayı gereksiz derecede zorlaştırır.
+
+\subsection{LPUART1: bilgisayara seri veri gönderme}
+
+\textit{Connectivity > LPUART1} ekranında aşağıdaki ayarları yap:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Alan & Değer \\
+\midrule
+Mode & Asynchronous \\
+Baud Rate & 115200 \\
+Word Length & 8 Bits \\
+Parity & None \\
+Stop Bits & 1 \\
+Hardware Flow Control & Disable / None \\
+Communication Mode & TX/RX \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Pinout ekranında şu eşleme görünmelidir:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Pin & Fonksiyon & Anlamı \\
+\midrule
+PA2 & \texttt{LPUART1\_TX} & STM32 $\rightarrow$ ST-LINK VCP $\rightarrow$ Mac \\
+PA3 & \texttt{LPUART1\_RX} & Mac $\rightarrow$ ST-LINK VCP $\rightarrow$ STM32 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{TX} (Transmit), STM32'nin dışarı gönderdiği hattır; bu projede STEP
+satırları PA2 üzerinden gider. \textbf{RX} (Receive), STM32'nin dışarıdan aldığı
+hattır. Henüz komut almıyoruz fakat PA3'ü ayarlamak, ileride bilgisayardan
+başlat/durdur/hız komutu göndermek için altyapı hazırlar.
+
+\textbf{Neden 115200 8-N-1?} 115200, terminal uygulamalarında yaygın ve bu proje
+için yeterince hızlıdır. 8-N-1; 8 veri biti, parity yok, 1 stop biti demektir.
+CoolTerm tarafında da aynı seçilmelidir. CTS/RTS kullanmadığımız için Flow Control
+kapalıdır.
+
+\subsection{Üç faz GPIO çıkışı}
+
+Pinout görünümünde şu üç pini \texttt{GPIO\_Output} yap ve etiketle:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Pin & User Label & GPIO ayarı \\
+\midrule
+PA4 & \texttt{PHASE\_A} & Output Push Pull, Low, No pull, Low speed \\
+PB4 & \texttt{PHASE\_B} & Output Push Pull, Low, No pull, Low speed \\
+PB5 & \texttt{PHASE\_C} & Output Push Pull, Low, No pull, Low speed \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Bu pinler bu projede boş olan üç bağımsız GPIO'dur. \texttt{Output Push Pull},
+pin HIGH iken aktif 3.3 V; LOW iken aktif GND sürmesini sağlar. Başlangıç
+seviyesinin Low olması reset sonrası güvenli durum verir. \texttt{Low speed}
+bu yavaş simülasyon için yeterlidir. PA5 ise karttaki LD2 kullanıcı LED'idir;
+bu projede faz pini değildir.
+
+\subsection{Clock ve kod üretimi}
+
+CubeMX'in ürettiği yapı HSI ve PLL ile 170 MHz sistem saatini kullanır:
+
+\begin{lstlisting}
+HSI = 16 MHz
+PLL girişi = 16 / 4 = 4 MHz
+VCO = 4 x 85 = 340 MHz
+SYSCLK = 340 / 2 = 170 MHz
+\end{lstlisting}
+
+Bu çalışma için Clock Configuration ekranında elle değişiklik yapmak gerekmez.
+Project Manager ekranında şu değerleri kullan:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Alan & Değer \\
+\midrule
+Project Name & \texttt{staj\_motor\_simule\_g491} \\
+Toolchain / IDE & STM32CubeIDE \\
+Firmware Package & STM32Cube FW\_G4 \\
+Keep User Code & Etkin \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{Keep User Code} açık olmalıdır. Bu sayede \texttt{.ioc} değişip tekrar
+\textit{Generate Code} yapıldığında \texttt{USER CODE BEGIN/END} bloklarına
+eklenen uygulama kodu korunur.
+
+\section{STM32CubeIDE: kodun çalışma mantığı}
+
+Kod \texttt{Core/Src/main.c} içindedir. Eklediğin kodu yalnızca
+\texttt{USER CODE} bloklarına koy. CubeMX'in oluşturduğu
+\texttt{MX\_GPIO\_Init()} ve \texttt{MX\_LPUART1\_UART\_Init()} fonksiyonlarını
+silme.
+
+\subsection{Faz durumları}
+
+\begin{lstlisting}
+typedef uint8_t PhaseState_t;
+
+enum
+{
+  PHASE_FLOAT = 0U,
+  PHASE_LOW   = 1U,
+  PHASE_HIGH  = 2U
+};
+\end{lstlisting}
+
+\begin{itemize}
+  \item \texttt{PHASE\_FLOAT}: Pin sürülmez, GPIO input/yüksek empedans durumundadır.
+  \item \texttt{PHASE\_LOW}: Pin aktif olarak 0 V, yani lojik 0 sürer.
+  \item \texttt{PHASE\_HIGH}: Pin aktif olarak 3.3 V, yani lojik 1 sürer.
+\end{itemize}
+
+FLOAT ile LOW aynı şey değildir. FLOAT, gerçek motor sürücüsünde ilgili faz
+kolunun kapatılmasına karşılık gelen lojik durumun güvenli simülasyonudur.
+
+\subsection{Altı adımlı komutasyon tablosu}
+
+\begin{center}
+\begin{tabular}{cccc}
+\toprule
+Adım & PHASE\_A & PHASE\_B & PHASE\_C \\
+\midrule
+1 & HIGH (+1) & LOW (-1) & FLOAT (0) \\
+2 & HIGH (+1) & FLOAT (0) & LOW (-1) \\
+3 & FLOAT (0) & HIGH (+1) & LOW (-1) \\
+4 & LOW (-1) & HIGH (+1) & FLOAT (0) \\
+5 & LOW (-1) & FLOAT (0) & HIGH (+1) \\
+6 & FLOAT (0) & LOW (-1) & HIGH (+1) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Her adımda bir faz HIGH, bir faz LOW, diğer faz FLOAT olur. Altıncı adımdan
+sonra tekrar ilk adıma dönülür.
+
+\begin{lstlisting}
+#define MOTOR_STEP_COUNT      6U
+#define MOTOR_STEP_PERIOD_MS 200U
+
+static const uint8_t commutation_table[MOTOR_STEP_COUNT] =
+{
+  PACK_PHASES(PHASE_HIGH,  PHASE_LOW,   PHASE_FLOAT),
+  PACK_PHASES(PHASE_HIGH,  PHASE_FLOAT, PHASE_LOW),
+  PACK_PHASES(PHASE_FLOAT, PHASE_HIGH,  PHASE_LOW),
+  PACK_PHASES(PHASE_LOW,   PHASE_HIGH,  PHASE_FLOAT),
+  PACK_PHASES(PHASE_LOW,   PHASE_FLOAT, PHASE_HIGH),
+  PACK_PHASES(PHASE_FLOAT, PHASE_LOW,   PHASE_HIGH)
+};
+\end{lstlisting}
+
+\texttt{PACK\_PHASES}, üç faz durumunu ikişer bit halinde tek byte'ta saklar.
+\texttt{UNPACK\_PHASE} ise seçilen adımdan A/B/C bilgisini tekrar ayırır.
+
+\subsection{Set\_Phase: HIGH, LOW ve FLOAT uygulanması}
+
+\begin{lstlisting}
+static void Set_Phase(GPIO_TypeDef *port, uint16_t pin,
+                      PhaseState_t state)
+{
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = pin;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+
+  if (state == PHASE_FLOAT)
+  {
+    gpio.Mode = GPIO_MODE_INPUT;
+    HAL_GPIO_Init(port, &gpio);
+  }
+  else
+  {
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    HAL_GPIO_Init(port, &gpio);
+    HAL_GPIO_WritePin(port, pin,
+      (state == PHASE_HIGH) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  }
+}
+\end{lstlisting}
+
+\begin{itemize}
+  \item HIGH: pin Output Push Pull olur, sonra \texttt{GPIO\_PIN\_SET} yazılır.
+  \item LOW: pin Output Push Pull olur, sonra \texttt{GPIO\_PIN\_RESET} yazılır.
+  \item FLOAT: pin input moda alınır; pin artık aktif sürülmez.
+\end{itemize}
+
+\subsection{Motor\_Advance, SysTick ve UART}
+
+\texttt{Motor\_Advance()} güncel adımı seçer, A/B/C pinlerini günceller ve aynı
+bilgiyi LPUART1 üzerinden CoolTerm'e yollar:
+
+\begin{lstlisting}
+STEP 1 | A: 1 | B: -1 | C: 0
+STEP 2 | A: 1 | B: 0 | C: -1
+STEP 3 | A: 0 | B: 1 | C: -1
+STEP 4 | A: -1 | B: 1 | C: 0
+STEP 5 | A: -1 | B: 0 | C: 1
+STEP 6 | A: 0 | B: -1 | C: 1
+\end{lstlisting}
+
+\begin{lstlisting}
+const uint32_t now_ms = HAL_GetTick();
+if ((uint32_t)(now_ms - last_step_ms) >= MOTOR_STEP_PERIOD_MS)
+{
+  last_step_ms += MOTOR_STEP_PERIOD_MS;
+  Motor_Advance();
+}
+\end{lstlisting}
+
+\texttt{HAL\_GetTick()} milisaniye sayacıdır. Periyot 200 ms olduğu için tam
+altı adımlı döngü $6 \times 200 = 1200$ ms, yani 1.2 s sürer.
+
+\section{Derleme, karta yazma ve debug}
+
+CubeIDE'de proje adına tıkla ve çekiç simgesine bas. Beklenen çıktı:
+
+\begin{lstlisting}
+Build Finished. 0 errors, 0 warnings.
+\end{lstlisting}
+
+Derleme sonunda şu dosya oluşur:
+
+\begin{lstlisting}
+Debug/staj_motor_simule_g491.elf
+\end{lstlisting}
+
+Kart USB ile bağlıyken CubeIDE içinden Run/Debug ile yükleme yapılabilir.
+ST-LINK firmware'i SWD üzerinden yazar ve MCU'yu resetler. Kartı DFU moduna
+alma gerekmez.
+
+Eğer CubeIDE \textit{ST-Link Server is required to launch the debug session}
+uyarısını verirse bu uygulama kodu hatası değildir; macOS'ta ST-LINK Server
+bileşeni eksiktir. ST-LINK Server'i kurup IDE'yi yeniden aç veya
+STM32CubeProgrammer'da ST-LINK/SWD bağlantısını seçip \texttt{.elf} dosyasını
+programla.
+
+\section{CoolTerm ile UART verisini görme}
+
+CoolTerm'de \textit{Options} ekranını aç ve şu değerleri gir:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Alan & Değer \\
+\midrule
+Serial Port & \texttt{/dev/cu.usbmodem...} \\
+Baudrate & 115200 \\
+Data Bits & 8 \\
+Parity & None \\
+Stop Bits & 1 \\
+Flow Control & None \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Sondaki port numarası her bağlanışta değişebilir; önemli olan NUCLEO/ST-LINK'e
+ait \texttt{/dev/cu.\allowbreak usbmodem...} girdisidir. \textit{Connect} düğmesine basınca
+başlık ve STEP 1--6 verileri yaklaşık her 200 ms'de bir görünmelidir.
+
+Metin okunmuyorsa ilk kontrol baud değeridir: hem CubeMX hem CoolTerm
+\textbf{115200} olmalıdır. Sonra 8-N-1 ve Flow Control=None değerlerini kontrol
+et. Port görünmüyorsa veri taşıyan USB kablosu kullan ve başka terminalin aynı
+portu açık tutmadığından emin ol.
+
+\section{CoolTerm Chart: ayar ve yorum}
+
+\subsection{Neden dört trace oluşur?}
+
+Okunaklı satırın içinde dört sayı vardır:
+
+\begin{lstlisting}
+STEP 1 | A: 1 | B: -1 | C: 0
+     ^      ^      ^       ^
+     |      |      |       +-- Trace 4: C
+     |      |      +---------- Trace 3: B
+     |      +----------------- Trace 2: A
+     +------------------------ Trace 1: STEP numarası
+\end{lstlisting}
+
+CoolTerm satırdaki sayıları ayıklar. Bu nedenle 0--6 arasında yükselen ilk eğri
+faz gerilimi değil, adım numarasıdır.
+
+\subsection{Temiz grafik için ayar}
+
+\begin{enumerate}
+  \item \textit{View > Chart} görünümüne geç.
+  \item Grafik alanında sağ tıkla, \textit{Chart Properties} seç.
+  \item \textit{Only plot lines with exactly the specified number of data points}
+        seçeneğini aç ve değeri \textbf{4} yap.
+  \item Sağ tıkla, \textit{Trace Properties} seç.
+  \item Trace 1 için \textit{Visible} seçeneğini kapat.
+  \item Trace 2: \textit{Phase A}; Trace 3: \textit{Phase B}; Trace 4:
+        \textit{Phase C} olarak isimlendir.
+  \item \textit{Clear Data} ile eski veriyi sil; 1--2 saniye yeni veri biriktir.
+\end{enumerate}
+
+Yakınlaştırma için \textit{View > Zoom Chart > Zoom In} yolunu kullan.
+Grafik üzerindeyken \texttt{Control + trackpad/mouse scroll} da zoom yapar.
+
+\subsection{Grafiği yorumlama}
+
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+Y değeri & Anlamı \\
+\midrule
++1 & Faz GPIO'su aktif olarak 3.3 V (HIGH) sürüyor. \\
+0 & Faz FLOAT; pin input/yüksek empedans, aktif sürme yok. \\
+-1 & Faz GPIO'su aktif olarak 0 V/GND (LOW) sürüyor. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Beklenen tekrar eden desen:
+
+\begin{lstlisting}
+A:  +1, +1,  0, -1, -1,  0, ...
+B:  -1,  0, +1, +1,  0, -1, ...
+C:   0, -1, -1,  0, +1, +1, ...
+\end{lstlisting}
+
+Bu eğriler sinüs değil, basamaklı/trapezoidal komutasyon sinyalleridir.
+Her adımda bir faz HIGH, bir faz LOW, bir faz FLOAT görülmesi doğru sonuçtur.
+
+\subsection{Hem okunaklı metin hem kusursuz chart istenirse}
+
+İleride iki satır türü göndermek en temiz yöntemdir:
+
+\begin{lstlisting}
+STEP 1 | A: 1 | B: -1 | C: 0    // Terminal satırı
+1,-1,0                           // Sadece chart satırı
+\end{lstlisting}
+
+Bu durumda Chart Properties'te yalnızca \textbf{3} sayı içeren satırları çiz
+filtresi seçilir; grafik sadece A/B/C eğrilerinden oluşur.
+
+\section{Kontrol listesi ve sonraki adımlar}
+
+\subsection{Başarı kontrol listesi}
+\begin{itemize}
+  \item CubeIDE: \texttt{0 errors, 0 warnings}
+  \item ST-LINK: Firmware karta yazılabiliyor.
+  \item CoolTerm: \texttt{/dev/cu.usbmodem...}, 115200 8-N-1, Flow Control=None
+  \item Terminal: STEP 1'den STEP 6'ya kadar sıra sürekli tekrar ediyor.
+  \item Chart: A/B/C yalnızca -1, 0, +1 seviyelerinde.
+\end{itemize}
+
+\subsection{Geliştirme sırası}
+\begin{enumerate}
+  \item PA5/LD2 LED'ini her komutasyon döngüsünde değiştir.
+  \item PC13/B1 butonuyla başlat/durdur ekle.
+  \item UART RX ile \texttt{s}, \texttt{p}, \texttt{+}, \texttt{-} komutlarını al.
+  \item \texttt{HAL\_GetTick()} yerine timer interrupt kullan.
+  \item GPIO yerine timer PWM kanallarını öğren.
+  \item Hall sensörü/back-EMF geri beslemesi ve gerçek gate driver ekle.
+\end{enumerate}
+
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{\centering
+\textbf{Özet:} CubeMX donanımı tanımlar; CubeIDE HAL kodunu derler; ST-LINK
+firmware'i SWD ile karta yazar; LPUART1 veriyi ST-LINK VCP üzerinden Mac'e taşır;
+CoolTerm ise veriyi terminal ve grafik olarak görünür yapar.
+}}
+\end{center}
+
+\end{document}

@@ -1,0 +1,644 @@
+===============================================================================
+ NUCLEO-G491RE | 3 FAZLI BLDC KOMUTASYON SIMULASYONU
+ STM32CubeMX + STM32CubeIDE + ST-LINK VCP + CoolTerm
+ Calisma Kilavuzu
+===============================================================================
+
+Proje adi       : staj_motor_simule_g491
+Hedef kart      : NUCLEO-G491RE
+Mikrodenetleyici: STM32G491RET6 (STM32G4 ailesi)
+Arayuz          : LPUART1 uzerinden ST-LINK Virtual COM Port (VCP)
+Olusturulma     : 02 Eylul 2026
+
+BU DOKUMANIN AMACI
+-------------------
+Bu calisma, gercek bir BLDC motoru surmek yerine uc adet GPIO pininde BLDC'nin
+alti-adimli komutasyon mantigini canlandirir. Her 200 ms'de A, B ve C fazlarinin
+durumu degisir; ayni bilgi LPUART1 ile bilgisayara gonderilir. CoolTerm hem
+metni gostermek hem de faz durumlarini grafik olarak incelemek icin kullanilir.
+
+Bu nedenle proje su uc konuyu birlikte ogretir:
+
+  1. CubeMX ile pin/periferik secimi ve kod uretimi,
+  2. HAL ile GPIO ve UART kullanimi,
+  3. Seri veriyi bilgisayarda okumak ve grafiklemek.
+
+ONEMLI GUVENLIK NOTU
+--------------------
+PA4, PB4 ve PB5 yalnizca 3.3 V lojik GPIO cikislaridir. Bir BLDC motorun
+fazlarini veya motor surucu MOSFET'lerini dogrudan bu pinlere baglama. Gercek
+motor uygulamasinda bir gate-driver / 3-faz inverter, akim olcumu, koruma ve
+PWM gerekir. Bu proje bunlardan onceki "komutasyon mantigi" katmanidir.
+
+
+===============================================================================
+1. GEREKLI DONANIM VE YAZILIM
+===============================================================================
+
+DONANIM
+-------
+  - NUCLEO-G491RE karti
+  - Veri aktarimini destekleyen micro-USB kablo
+    (yalnizca sarj kablosu bilgisayarda port olusturmaz)
+  - Mac bilgisayar
+
+YAZILIM
+-------
+  - STM32CubeMX
+  - STM32CubeIDE
+  - STM32CubeProgrammer (kart/programlayici tanilama icin yararlidir)
+  - CoolTerm
+  - STM32Cube FW_G4 paketi
+
+NUCLEO KARTI NEDEN KOLAYLIK SAGLAR?
+-------------------------------------
+NUCLEO-G491RE'nin uzerinde ST-LINK V3E bulunur. Bu tek donanim iki ayri is
+yapar:
+
+  a) SWD ile programa yazma ve hata ayiklama,
+  b) Virtual COM Port ile UART verisini USB uzerinden bilgisayara tasima.
+
+Bu sebeple ek bir USB-UART donusturucuya ihtiyac yoktur.
+
+                     +-------------------+
+                     |   Mac + CoolTerm  |
+                     +---------+---------+
+                               | USB / micro-USB veri kablosu
+                               v
+  +-------------------+   +-----+-----------------------+
+  | STM32G491RET6     |   | NUCLEO uzerindeki ST-LINK   |
+  |                   |---| SWD: programlama/debug      |
+  | PA2 LPUART1_TX ---|-->| VCP: UART -> Mac            |
+  | PA3 LPUART1_RX <--|<--| VCP: Mac -> UART            |
+  +-------------------+   +-----------------------------+
+
+SWD ve VCP ayni USB kablosunu kullanir, fakat farkli isler icindir. SWD,
+PA13/PA14 pinleri ile hata ayiklama/programlama yapar. VCP ise PA2/PA3
+uzerinden UART iletisimidir.
+
+
+===============================================================================
+2. PROJEYI CUBEMX ILE SIFIRDAN OLUSTURMA
+===============================================================================
+
+2.1 Kart secimi
+--------------
+1. STM32CubeMX'i ac.
+2. "Access to MCU Selector" yerine "Access to Board Selector" sec.
+3. Arama kutusuna NUCLEO-G491RE yaz.
+4. NUCLEO-G491RE kartini secip "Start Project" tusuna bas.
+
+Kart secicisini kullanmak onemlidir: CubeMX karta ait ST-LINK, kullanici LED'i
+ve Virtual COM Port baglantilarini bilir. Sadece MCU secmek de mumkundur; ancak
+bu kez kart uzerindeki fiziksel baglantilarin sorumlulugu tamamen sana kalir.
+
+2.2 Eger LPUART alani kilitliyse
+--------------------------------
+Bazi kart sablonlarinda pinler onceden ayrilmis gorunebilir. LPUART1 altindaki
+"Mode" secenegi gri/kilitli ise yeni baslanmis projede Pinout menusu altindan
+"Clear Pinout" veya ilgili "Reset Configuration" secenegini kullan. Ardindan
+asagidaki ayarlari tekrar yap.
+
+Bu islem mevcut projede rastgele yapilmamali; daha once yapilmis ayarlari
+silebilir. Bu kilavuzda sifirdan olusturulan proje icin kullanilir.
+
+2.3 Debug arayuzu: SYS / Serial Wire
+-------------------------------------
+Sol panelden System Core > SYS sec.
+
+  Debug = Serial Wire
+
+Neden?
+  - Serial Wire, SWDIO (PA13) ve SWCLK (PA14) kullanir.
+  - NUCLEO'nun ST-LINK'i bu iki hat uzerinden MCU'yu programlar ve debug eder.
+  - "No Debug" secilirse ileride hata ayiklama ve bazen yeniden programlama
+    gereksiz zorlasir.
+
+Bu ayar sonucunda PA13 ve PA14 yeşil gorunur. Bunlari baska GPIO gorevi icin
+kullanma.
+
+2.4 UART arayuzu: Connectivity / LPUART1
+-----------------------------------------
+Sol panelden Connectivity > LPUART1 sec.
+
+  Mode                    = Asynchronous
+  Baud Rate               = 115200
+  Word Length             = 8 Bits
+  Parity                  = None
+  Stop Bits               = 1
+  Hardware Flow Control   = Disable / None
+  Mode (iletisim yonu)    = TX/RX
+
+CubeMX pinleri sunlara eslemelidir:
+
+  PA2 = LPUART1_TX [VCP_TX]
+  PA3 = LPUART1_RX [VCP_RX]
+
+RX VE TX NEDIR?
+----------------
+UART'ta isimler mikrodenetleyici tarafindan okunur:
+
+  TX (Transmit) : STM32'nin disariya gonderdigi hat.
+                  Bu projede PA2, STEP bilgisini CoolTerm'e gonderir.
+
+  RX (Receive)  : STM32'nin disaridan aldigi hat.
+                  Bu projede henuz komut okumuyoruz; ama PA3'u ayarlamak,
+                  ileride bilgisayardan baslat/durdur/hiz degistir komutu
+                  gonderebilmek icin hazirliktir.
+
+NEDEN LPUART1, NEDEN 115200 8-N-1?
+-----------------------------------
+  - NUCLEO-G491RE'de PA2/PA3, ST-LINK'in Virtual COM Port yoluna baglidir.
+    Bu nedenle ayni USB kablosu ile veri goruruz.
+  - LPUART, dusuk guc odakli bir UART cevresel birimidir. Bu uygulamada normal
+    UART gibi calisir; karttaki VCP eslemesi nedeniyle pratik bir secimdir.
+  - 115200 baud, terminal uygulamalarinda yaygin, yeterince hizli ve kolay
+    eslestirilen bir degerdir.
+  - 8-N-1; 8 veri biti, parity yok, 1 stop biti demektir. Hem STM32 hem
+    CoolTerm tarafinda ayni olmalidir. Bir taraf farkli olursa anlamsiz
+    karakterler gorursun.
+
+Hardware flow control kapali birakilir. CTS/RTS hatlarini kullanmiyoruz;
+yalnizca TX ve RX yeterlidir.
+
+2.5 Uc faz simule GPIO cikislari
+--------------------------------
+Pinout gorunumunde su pinlere tiklayip GPIO_Output ata:
+
+  PA4  -> GPIO_Output, User Label: PHASE_A
+  PB4  -> GPIO_Output, User Label: PHASE_B
+  PB5  -> GPIO_Output, User Label: PHASE_C
+
+System Core > GPIO ekraninda bu uc pin icin:
+
+  GPIO output level = Low
+  GPIO mode         = Output Push Pull
+  GPIO Pull-up/Pull-down = No pull
+  Maximum output speed   = Low
+
+PINLER NEDEN BOYLE SECILDI?
+----------------------------
+  - PA4, PB4 ve PB5 bu kart/projede bos ve birbirinden bagimsiz uc GPIO'dur.
+  - A, B ve C isimleri fiziksel motor fazini degil, simulasyondaki uc lojik
+    fazi temsil eder.
+  - Push-Pull cikis, pinin HIGH iken 3.3 V'a; LOW iken GND'ye aktif bicimde
+    surulmesini saglar.
+  - "No pull" secimi, cikis modunda ek bir dahili direnç kullanmamak demektir.
+  - "Low speed" bu yavas simulasyon icin yeterlidir; gereksiz hizli kenarlar
+    ve elektromanyetik gurultu olusturmaz.
+  - Baslangic seviyesinin Low olmasi, reset sonrasi bilinmeyen surme durumunu
+    engeller.
+
+Not: PA5 karttaki LD2 kullanici LED'idir; bu projede fazlardan biri degildir.
+
+2.6 Saat (Clock) ayari
+----------------------
+"Clock Configuration" sekmesine gec. CubeMX'in bu proje icin urettigi ayarda
+dahili HSI osilatoru ve PLL kullanilarak sistem saati 170 MHz olur:
+
+  HSI = 16 MHz
+  PLL girisi = 16 / 4 = 4 MHz
+  VCO = 4 x 85 = 340 MHz
+  SYSCLK = 340 / 2 = 170 MHz
+
+Bu calisma icin saati elle degistirmek zorunda degilsin; CubeMX'in olusturdugu
+170 MHz ayari UART ve SysTick zamanlamasi icin uygundur. Buradaki kritik nokta,
+clock ayarini CubeMX olustursun ve elle yazilan SystemClock_Config kodu ile
+tutarsizlik olusmasin.
+
+2.7 Project Manager ve kod uretimi
+----------------------------------
+Project Manager sekmesinde:
+
+  Project Name       = staj_motor_simule_g491
+  Toolchain / IDE    = STM32CubeIDE
+  Firmware Package   = STM32Cube FW_G4
+  "Keep User Code..." = etkin
+
+"Keep User Code" cok onemlidir. Daha sonra .ioc dosyasinda pin ekleyip yeniden
+"Generate Code" yaptiginda, USER CODE BEGIN/END bloklarina yazdigimiz mantik
+korunur.
+
+Sonra "GENERATE CODE" tusuna bas. IDE acilmasini kabul et.
+
+
+===============================================================================
+3. STM32CUBEIDE: KODUN YAPISI VE MANTIGI
+===============================================================================
+
+CubeMX'in urettigi dosya:
+
+  Core/Src/main.c
+
+Kod eklerken sadece su alanlar kullanilmalidir:
+
+  /* USER CODE BEGIN ... */
+  /* USER CODE END ... */
+
+CubeMX'in urettigi fonksiyon isimlerini silme veya yeniden adlandirma. Ornegin:
+
+  MX_GPIO_Init();
+  MX_LPUART1_UART_Init();
+
+fonksiyonlari CubeMX uretir; main() icinden cagrilir.
+
+3.1 Faz durumlari
+-----------------
+Asagidaki tanimlar, bir faz pininin uc durumunu ifade eder:
+
+  PHASE_FLOAT : Pin surulmez, yuksek empedans (input) durumundadir.
+  PHASE_LOW   : Pin aktif olarak 0 V / lojik 0 surer.
+  PHASE_HIGH  : Pin aktif olarak 3.3 V / lojik 1 surer.
+
+KOD:
+
+  typedef uint8_t PhaseState_t;
+
+  enum
+  {
+    PHASE_FLOAT = 0U,
+    PHASE_LOW   = 1U,
+    PHASE_HIGH  = 2U
+  };
+
+Buradaki PHASE_FLOAT ile dijital 0 ayni sey degildir. LOW, GND'ye aktif olarak
+baglidir. FLOAT ise pin Input moda alindigi icin elektriksel olarak surulmez.
+Gercek BLDC surucude bunun karsiligi, ilgili faz kolunun kapatilmasidir.
+
+3.2 Alti-adimli komutasyon tablosu
+----------------------------------
+Bir BLDC motorun temel trapezoidal / six-step komutasyonunda, her anda:
+
+  - bir faz HIGH,
+  - bir faz LOW,
+  - bir faz FLOAT
+
+olur. Projedeki sira asagidadir:
+
+  Adim    PHASE_A     PHASE_B     PHASE_C
+  -----   ----------  ----------  ----------
+    1     HIGH (1)    LOW (-1)   FLOAT (0)
+    2     HIGH (1)    FLOAT (0)  LOW (-1)
+    3     FLOAT (0)   HIGH (1)   LOW (-1)
+    4     LOW (-1)    HIGH (1)   FLOAT (0)
+    5     LOW (-1)    FLOAT (0)  HIGH (1)
+    6     FLOAT (0)   LOW (-1)   HIGH (1)
+
+Bu sira tekrar Adim 1'e doner. Her faz, diger fazlara gore 120 derece kaymis
+bir sirayla suruluyor gibi dusunulebilir. Bu projede 200 ms'lik adim suresi
+yalnizca gozlem kolayligi icindir; gercek motorlarda komutasyon cok daha hizli
+olur ve geri besleme ile senkronize edilir.
+
+KODDA TABLO:
+
+  #define MOTOR_STEP_COUNT      6U
+  #define MOTOR_STEP_PERIOD_MS 200U
+
+  static const uint8_t commutation_table[MOTOR_STEP_COUNT] =
+  {
+    PACK_PHASES(PHASE_HIGH,  PHASE_LOW,   PHASE_FLOAT),
+    PACK_PHASES(PHASE_HIGH,  PHASE_FLOAT, PHASE_LOW),
+    PACK_PHASES(PHASE_FLOAT, PHASE_HIGH,  PHASE_LOW),
+    PACK_PHASES(PHASE_LOW,   PHASE_HIGH,  PHASE_FLOAT),
+    PACK_PHASES(PHASE_LOW,   PHASE_FLOAT, PHASE_HIGH),
+    PACK_PHASES(PHASE_FLOAT, PHASE_LOW,   PHASE_HIGH)
+  };
+
+PACK_PHASES, uc faz durumunu ikiser bitle tek bayta sigdirir. Bu, az RAM/Flash
+kullanir ve tablonun okunabilirligini korur. UNPACK_PHASE ise secilen adimdan
+A/B/C durumunu tekrar ayirir.
+
+3.3 Set_Phase(): HIGH, LOW ve FLOAT nasil uygulanir?
+-----------------------------------------------------
+
+  static void Set_Phase(GPIO_TypeDef *port, uint16_t pin,
+                        PhaseState_t state)
+  {
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = pin;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+
+    if (state == PHASE_FLOAT)
+    {
+      gpio.Mode = GPIO_MODE_INPUT;
+      HAL_GPIO_Init(port, &gpio);
+    }
+    else
+    {
+      gpio.Mode = GPIO_MODE_OUTPUT_PP;
+      HAL_GPIO_Init(port, &gpio);
+      HAL_GPIO_WritePin(port, pin,
+          (state == PHASE_HIGH) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
+  }
+
+Mantik su sekildedir:
+
+  HIGH  -> pin Output Push-Pull olur, sonra SET yazilir.
+  LOW   -> pin Output Push-Pull olur, sonra RESET yazilir.
+  FLOAT -> pin Input olur. Pin artik ne HIGH ne LOW surer.
+
+Bu yontem bir mantik simulasyonudur. Gercek motor surucude fazi "bos birakma"
+MOSFET'leri kapatarak yapilir; GPIO'yu input yapmak sadece bu fikri guvenli
+sekilde temsil eder.
+
+3.4 UART metni ve Motor_Advance()
+---------------------------------
+UART'a gonderilen okunakli satirlar sunlardir:
+
+  STEP 1 | A: 1 | B: -1 | C: 0
+  STEP 2 | A: 1 | B: 0 | C: -1
+  STEP 3 | A: 0 | B: 1 | C: -1
+  STEP 4 | A: -1 | B: 1 | C: 0
+  STEP 5 | A: -1 | B: 0 | C: 1
+  STEP 6 | A: 0 | B: -1 | C: 1
+
+Motor_Advance() fonksiyonu her cagrildiginda:
+
+  1. current_step ile tablodan ilgili komutu alir.
+  2. Set_Phase() ile A, B, C pinlerini gunceller.
+  3. HAL_UART_Transmit() ile ayni adimi VCP'ye yollar.
+  4. Adimi artirir; 6'yi gecince tekrar 0'a doner.
+
+ZAMANLAMA:
+
+  uint32_t last_step_ms = HAL_GetTick();
+
+  if ((uint32_t)(now_ms - last_step_ms) >= MOTOR_STEP_PERIOD_MS)
+  {
+    last_step_ms += MOTOR_STEP_PERIOD_MS;
+    Motor_Advance();
+  }
+
+HAL_GetTick(), CubeMX'in SysTick zaman tabanindan gelen milisaniye sayacidir.
+200 ms sonunda yeni bir adim gonderilir. Alti adim x 200 ms = 1200 ms;
+dolayisiyla komutasyon dizisi yaklasik 1.2 saniyede bir tam tur tekrar eder.
+
+3.5 main() baslangic sirasi
+---------------------------
+main() icindeki sira su nedenle onemlidir:
+
+  HAL_Init();                 -> HAL ve SysTick altyapisini baslatir.
+  SystemClock_Config();       -> MCU saatini ayarlar.
+  MX_GPIO_Init();             -> A/B/C pinlerini ilk guvenli LOW durumuna alir.
+  MX_LPUART1_UART_Init();     -> PA2/PA3 UART birimini 115200 8-N-1 baslatir.
+  HAL_UART_Transmit(...);     -> baslik metnini bir kez yollar.
+  while (1) { ... }           -> her 200 ms'de komutasyonu ilerletir.
+
+UART baslatilmadan HAL_UART_Transmit cagrilamaz. Benzer bicimde GPIO
+baslatilmadan HAL_GPIO_WritePin kullanmak dogru degildir.
+
+
+===============================================================================
+4. DERLEME, KARTA YUKLEME VE DEBUG
+===============================================================================
+
+4.1 Derleme
+-----------
+CubeIDE'de proje adina tikla ve cekiç (Build) simgesine bas.
+
+Beklenen sonuc:
+
+  Build Finished. 0 errors, 0 warnings.
+
+"Debug" klasoru altinda .elf dosyasi olusur:
+
+  Debug/staj_motor_simule_g491.elf
+
+.elf dosyasi, MCU flash'ina yazilan uygulama ve debug bilgisini tasir.
+
+4.2 ST-LINK ile karta yukleme
+-----------------------------
+Kart USB ile Mac'e takiliyken CubeIDE icinden Run veya Debug secenegiyle
+uygulamayi calistirabilirsin. ST-LINK, SWD uzerinden programi yazar ve reset
+atar.
+
+Eger CubeIDE su uyariyi verirse:
+
+  "ST-Link Server is required to launch the debug session"
+
+bu uygulama kodu hatasi degildir. Mac'te ST-LINK Server bileseni eksiktir.
+ST'nin resmi sayfasindan ST-LINK Server'i kurup CubeIDE'yi yeniden ac. Kod
+programlamak icin alternatif olarak STM32CubeProgrammer kullanilabilir.
+
+CubeProgrammer ile genel yol:
+
+  1. Connection tipini ST-LINK / SWD sec.
+  2. Connect tusuna bas; Device ID gorunmelidir.
+  3. Debug/staj_motor_simule_g491.elf dosyasini sec.
+  4. Download/Start Programming yap.
+  5. Reset after programming secenegi aciksa kart programdan sonra calisir.
+
+Karti DFU moduna alma gerekmez. Bu NUCLEO kartinda SWD/ST-LINK kullanilir.
+
+4.3 Programlama basarisiz olursa
+--------------------------------
+  - Veri destekli USB kablosu kullandigini dogrula.
+  - Baska bir USB portu veya hub yerine dogrudan port dene.
+  - CubeProgrammer acikken IDE debug baslatma; ayni ST-LINK'i iki uygulama
+    ayni anda sahiplenemez.
+  - SYS > Debug ayarinin Serial Wire oldugunu dogrula.
+  - Kartin ST-LINK USB baglantisini cikarip tekrar tak.
+
+
+===============================================================================
+5. COOLTERM ILE UART VERISINI OKUMA
+===============================================================================
+
+5.1 Portu bulma
+---------------
+Kart takiliyken macOS'ta CoolTerm'in Connection Options ekranini ac. Port
+listesinde genellikle asagidakine benzer bir isim gorursun:
+
+  /dev/cu.usbmodem11203
+
+Sondaki sayi her Mac'te ve her yeniden baglantida farkli olabilir. Ezberlenecek
+deger degil; ST-LINK VCP'ye ait /dev/cu.usbmodem... girdisidir.
+
+5.2 CoolTerm baglanti ayarlari
+------------------------------
+
+  Serial Port   = /dev/cu.usbmodem... (NUCLEO/ST-LINK VCP portu)
+  Baudrate      = 115200
+  Data Bits     = 8
+  Parity        = None
+  Stop Bits     = 1
+  Flow Control  = None
+
+"Connect" tusuna bas. STM32 reset oldugunda ya da program calistiginda su
+metinleri gorursun:
+
+  MOTOR FAZ SIMULASYONU | 1=HIGH -1=LOW 0=FLOAT
+  STEP 1 | A: 1 | B: -1 | C: 0
+  STEP 2 | A: 1 | B: 0 | C: -1
+  STEP 3 | A: 0 | B: 1 | C: -1
+  ...
+
+Ekranin hizla akmasi normaldir: her 200 ms'de bir yeni satir gelir.
+
+5.3 Metin okunmuyorsa
+----------------------
+En yaygin sebep baud uyusmazligidir. CubeMX ve CoolTerm'de ikisi de 115200
+olmalidir. Ayrica 8-N-1 ve Flow Control=None degerlerini eslestir.
+
+Port hic gorunmuyorsa kablo sarj kablosu olabilir. Karti cikar-tak; sonra
+CoolTerm Options icinde port listesini yenile. Baska bir seri terminalin ayni
+portu acik olmadigindan emin ol.
+
+
+===============================================================================
+6. COOLTERM CHART: AYARLAMA VE YORUMLAMA
+===============================================================================
+
+6.1 Neden ilk grafik kalabalik gorunur?
+----------------------------------------
+Mevcut okunakli satirda dort sayi vardir:
+
+  STEP 1 | A: 1 | B: -1 | C: 0
+       ^      ^      ^       ^
+       |      |      |       |
+       |      |      |       +-- Trace 4: C
+       |      |      +---------- Trace 3: B
+       |      +----------------- Trace 2: A
+       +------------------------ Trace 1: adim numarasi
+
+CoolTerm bir satirdaki sayilari ayiklar. Bu nedenle STEP 1 ifadesindeki 1'i de
+ayri bir trace sayar. Ekrandaki 0'dan 6'ya yukselen mavi cizgi adim numarasidir;
+faz gerilimi degildir. A/B/C ise sadece -1, 0 ve 1 arasinda degisir.
+
+6.2 Temiz chart ayari
+---------------------
+1. CoolTerm'de View > Chart gorunumune gec.
+2. Grafik alaninda sag tikla > Chart Properties... sec.
+3. "Only plot lines with exactly the specified number of data points" secenegini
+   etkinlestir ve sayiyi 4 yap.
+   Bu, baslik satirinda bulunan uc sayinin grafik olmasini engeller.
+4. Sag tikla > Trace Properties... ac.
+5. Trace 1'in Visible kutusunu kapat. Bu sadece STEP numarasidir.
+6. Trace 2 etiketini "Phase A", Trace 3'u "Phase B", Trace 4'u "Phase C" yap.
+7. "Show Legend" secenegini acik tut.
+8. Clear Data ile eski veriyi temizle. Ardindan kisa sure yeni veri biriktir.
+
+6.3 Zoom ve kaydirma
+--------------------
+  - View > Zoom Chart > Zoom In ile yakinlas.
+  - Mac'te grafigin uzerindeyken Control + trackpad/mouse scroll ile de zoom
+    yapabilirsin.
+  - Yaklasinca grafik alanindaki kaydirma cubuklariyla gecmis veriye don.
+  - Once Clear Data yapip sadece 1-2 saniyelik veri biriktirmek, onlarca donguyu
+    ayni ekranda gormekten daha okunaklidir.
+
+6.4 Grafigi nasil okumaliyim?
+-----------------------------
+
+X ekseni: Zaman / ornek sirasi. Her nokta 200 ms sonra gelir.
+Y ekseni:
+
+  +1 = HIGH  : ilgili GPIO aktif olarak 3.3 V suruyor.
+   0 = FLOAT : ilgili GPIO input/yuksek empedans; surulmuyor.
+  -1 = LOW   : ilgili GPIO aktif olarak 0 V (GND) suruyor.
+
+Faz dalga sekilleri su kalipta tekrar eder:
+
+  A:  +1, +1,  0, -1, -1,  0,  ...
+  B:  -1,  0, +1, +1,  0, -1,  ...
+  C:   0, -1, -1,  0, +1, +1,  ...
+
+Bu, uc fazin birbirine gore kaymali oldugunu gosterir. Her adimda yalnizca iki
+faz aktif surulur; ucuncu faz float'tadir. Bu nedenle grafik, sinusoidden cok
+basamakli (trapezoidal/six-step) bir sekil gorunur. Bu proje icin dogru beklenen
+sonuc budur.
+
+6.5 Hem okunakli metin hem kusursuz chart istenirse
+---------------------------------------------------
+En iyi serbest gelistirme yaklasimi, iki farkli cikis modu kullanmaktir:
+
+  Terminal icin : STEP 1 | A: 1 | B: -1 | C: 0
+  Chart icin    : 1,-1,0
+
+Grafik satiri sadece uc sayi icerdigi icin CoolTerm dogrudan A/B/C egirilerini
+cizer. Okunakli satir ile sayisal satir ayni anda gonderilecekse Chart
+Properties icinde "exactly 3 data points" filtresi acilir; terminal metni
+grafik disinda kalir. Bu dokumandaki mevcut firmware okunakli modu kullanir.
+
+
+===============================================================================
+7. SONUCUN DOGRULANMASI
+===============================================================================
+
+ASIL BASARI KRITERLERI
+----------------------
+[ ] CubeIDE Build Finished: 0 errors, 0 warnings yaziyor.
+[ ] ST-LINK karta program yazabiliyor.
+[ ] CoolTerm'de /dev/cu.usbmodem... portu gorunuyor ve 115200 8-N-1 ile aciliyor.
+[ ] Baslik satiri ve STEP 1 ... STEP 6 sirasi tekrar ediyor.
+[ ] Her satir arasinda yaklasik 200 ms var.
+[ ] Chart'ta Phase A/B/C -1, 0, +1 seviyelerinde donuyor.
+[ ] Ayni anda bir faz HIGH, bir faz LOW, bir faz FLOAT.
+
+Gerilimleri gercekten olcmek istersen bir osiloskop veya logic analyzer kullan.
+200 ms'lik gecislerden dolayi standart multimetre genellikle anlamsiz ortalama
+deger gosterebilir. Bu asamada motor baglama; yalnizca GPIO lojigini izle.
+
+
+===============================================================================
+8. SIK KARSILASILAN SORUNLAR
+===============================================================================
+
+SORUN: CoolTerm'de port yok.
+COZUM: Veri destekli kablo dene, karti cikar/tak, USB hub yerine dogrudan port
+       dene. Port adi /dev/cu.usbmodem... seklindedir.
+
+SORUN: Metin anlamsiz karakterlerden olusuyor.
+COZUM: Baudrate iki tarafta 115200 olmali. 8 data bit, parity none, 1 stop bit,
+       flow control none ayarlarini tekrar kontrol et.
+
+SORUN: Chart'ta 0-6 arasinda yukselen bir cizgi goruyorum.
+COZUM: Bu STEP numarasi Trace 1'dir. Trace Properties'ten gizle.
+
+SORUN: Chart cok yogun / cizgiler birbirine yakin.
+COZUM: Clear Data yap, 1-2 saniye veri biriktir ve Zoom In kullan. Bu sinyalin
+       yalnizca uc seviye icermesi nedeniyle cizgilerin yatayda tekrar etmesi
+       normaldir.
+
+SORUN: CubeIDE "ST-Link Server is required" diyor.
+COZUM: Bu firmware hatasi degildir. ST-LINK Server'i kurup IDE'yi yeniden ac;
+       veya STM32CubeProgrammer ile .elf dosyasini SWD uzerinden yaz.
+
+SORUN: LPUART1 Mode alani secilemiyor.
+COZUM: Yeni projede kart sablonunun pin bagimliligini temizleyip yeniden
+       LPUART1'i Asynchronous sec. Sonra PA2=TX ve PA3=RX eslemesini kontrol et.
+
+
+===============================================================================
+9. BUNDAN SONRA NE OGRENILMELI?
+===============================================================================
+
+Bu proje temel seviyeyi tamamlar. Mantikli gelisim sirasi:
+
+  1. PA5 (LD2) LED'ini her komutasyon dongusunde yak/sondur.
+  2. PC13 (B1) kullanici butonuyla motoru baslat/durdur.
+  3. UART RX ile 's', 'p', '+' ve '-' komutlarini al;
+     motoru baslat, durdur, hizlandir ve yavaslat.
+  4. HAL_GetTick yerine TIM interrupt ile kesin periyot olustur.
+  5. Timer PWM kanallarini ogren; fazlari GPIO yerine PWM ile sur.
+  6. Hall sensor veya back-EMF geri beslemesi ekle.
+  7. Gercek 3-faz gate driver ve akim korumasi ile guvenli donanima gec.
+
+OZET
+----
+Bu calismada CubeMX donanimi tanimladi; CubeIDE HAL kodunu derledi; ST-LINK
+firmware'i SWD ile karta yazdi; LPUART1 PA2/PA3 uzerinden metni bilgisayara
+tasidi; CoolTerm ise sonucu terminal ve chart olarak gorunur hale getirdi.
+
+Temel zincir:
+
+  Komutasyon tablosu -> GPIO A/B/C -> LPUART1 TX -> ST-LINK VCP -> CoolTerm
+
+Bu zinciri anlayinca GPIO, UART, zamanlama, debug ve basit motor kontrol
+kavramlarini ayni proje uzerinde birbirine baglamis olursun.
+
+===============================================================================
+BITIS
+===============================================================================

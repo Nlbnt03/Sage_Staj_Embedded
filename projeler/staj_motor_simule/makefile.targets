@@ -1,0 +1,11 @@
+# CubeIDE'nin Debug/Release makefile'larina eklenen kalici hedef.
+# Flash scriptine debug sembollu ELF yerine yalnizca karta yazilacak BIN'i verir.
+BIN_ARTIFACT := $(BUILD_ARTIFACT_NAME).bin
+
+secondary-outputs: $(BIN_ARTIFACT)
+
+$(BIN_ARTIFACT): $(BUILD_ARTIFACT)
+	arm-none-eabi-objcopy -O binary "$<" "$@"
+	@echo 'Finished building binary: $@'
+	@echo ' '
+

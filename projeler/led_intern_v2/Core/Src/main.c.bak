@@ -1,0 +1,411 @@
+#include "main.h"
+
+/* =========================================================
+ * DONANIM DEĞİŞKENLERİ
+ * ========================================================= */
+
+/* TIM2 zamanlayıcısının HAL tarafından kullanılan yapısı */
+TIM_HandleTypeDef htim2;
+
+
+/* =========================================================
+ * PWM VE PARLAKLIK DEĞİŞKENLERİ
+ * ========================================================= */
+
+/*
+ * PWM faz sayacı:
+ * Sürekli olarak 0 ile 99 arasında döner.
+ */
+volatile uint8_t pwm_phase = 0;
+
+/*
+ * LED parlaklığı:
+ * 0   = tamamen sönük
+ * 100 = tamamen parlak
+ */
+volatile uint8_t brightness = 0;
+
+/*
+ * 1 olduğunda parlaklık artar.
+ * 0 olduğunda parlaklık azalır.
+ */
+volatile uint8_t fade_up = 1;
+
+/*
+ * Parlaklık değişimini yavaşlatmak için kullanılır.
+ */
+volatile uint16_t fade_counter = 0;
+
+
+/* =========================================================
+ * FONKSİYON BİLDİRİMLERİ
+ * ========================================================= */
+
+void SystemClock_Config(void);
+
+static void MX_GPIO_Init(void);
+static void MX_TIM2_Init(void);
+
+
+/* =========================================================
+ * ANA PROGRAM
+ * ========================================================= */
+
+int main(void)
+{
+  /*
+   * HAL kütüphanesini başlatır.
+   * SysTick ve temel işlemci ayarları burada hazırlanır.
+   */
+  HAL_Init();
+
+  /*
+   * Mikrodenetleyicinin sistem saatini ayarlar.
+   */
+  SystemClock_Config();
+
+  /*
+   * PC13 LED pinini çıkış olarak ayarlar.
+   */
+  MX_GPIO_Init();
+
+  /*
+   * TIM2 zamanlayıcısını ayarlar.
+   *
+   * Timer frekansı:
+   * 16 MHz / (15 + 1) / (99 + 1) = 10 kHz
+   */
+  MX_TIM2_Init();
+
+  /*
+   * TIM2'yi kesme üretecek şekilde başlatır.
+   *
+   * Bundan sonra TIM2 her 100 mikrosaniyede bir
+   * HAL_TIM_PeriodElapsedCallback() fonksiyonunu çağırır.
+   */
+  if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /*
+   * Sonsuz ana program döngüsü.
+   *
+   * LED işlemleri timer kesmesinde yapıldığı için burada
+   * herhangi bir LED koduna ihtiyaç yoktur.
+   */
+  while (1)
+  {
+    HAL_Delay(1000);
+  }
+}
+
+
+/* =========================================================
+ * SİSTEM SAATİ AYARLARI
+ * ========================================================= */
+
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /*
+   * Güç kontrol biriminin saatini açar.
+   */
+  __HAL_RCC_PWR_CLK_ENABLE();
+
+  /*
+   * STM32F401 için gerilim ölçeklendirme ayarı.
+   */
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+
+  /*
+   * Dahili 16 MHz HSI osilatörünü kullan.
+   */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /*
+   * Sistem ve çevresel birim saatlerini ayarla.
+   */
+  RCC_ClkInitStruct.ClockType =
+      RCC_CLOCKTYPE_HCLK  |
+      RCC_CLOCKTYPE_SYSCLK |
+      RCC_CLOCKTYPE_PCLK1 |
+      RCC_CLOCKTYPE_PCLK2;
+
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+
+  RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+
+/* =========================================================
+ * TIM2 AYARLARI
+ * ========================================================= */
+
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef clock_config = {0};
+  TIM_MasterConfigTypeDef master_config = {0};
+
+  /*
+   * Kullanılacak zamanlayıcı: TIM2
+   */
+  htim2.Instance = TIM2;
+
+  /*
+   * 16 MHz timer saatini 16'ya böler:
+   *
+   * 16 MHz / (15 + 1) = 1 MHz
+   */
+  htim2.Init.Prescaler = 15;
+
+  /*
+   * Sayaç yukarı doğru sayacak.
+   */
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+
+  /*
+   * Sayaç 0 ile 99 arasında sayacak.
+   *
+   * 1 MHz / (99 + 1) = 10 kHz kesme frekansı
+   */
+  htim2.Init.Period = 99;
+
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+
+  htim2.Init.AutoReloadPreload =
+      TIM_AUTORELOAD_PRELOAD_DISABLE;
+
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /*
+   * TIM2'nin dahili işlemci saatini kullanmasını sağlar.
+   */
+  clock_config.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+
+  if (HAL_TIM_ConfigClockSource(&htim2, &clock_config) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /*
+   * TIM2 başka bir timer'ı tetiklemeyecek.
+   */
+  master_config.MasterOutputTrigger = TIM_TRGO_RESET;
+  master_config.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+
+  if (HAL_TIMEx_MasterConfigSynchronization(
+          &htim2,
+          &master_config) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+
+/* =========================================================
+ * GPIO AYARLARI
+ * ========================================================= */
+
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /*
+   * GPIOC biriminin saatini açar.
+   */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+
+  /*
+   * PC13 LED'i aktif-low çalışır:
+   *
+   * GPIO_PIN_SET   = LED sönük
+   * GPIO_PIN_RESET = LED yanık
+   *
+   * Program başlarken LED'i söndür.
+   */
+  HAL_GPIO_WritePin(
+      LED_GPIO_Port,
+      LED_Pin,
+      GPIO_PIN_SET);
+
+  /*
+   * PC13 pinini dijital çıkış olarak ayarla.
+   */
+  GPIO_InitStruct.Pin = LED_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+
+  HAL_GPIO_Init(
+      LED_GPIO_Port,
+      &GPIO_InitStruct);
+}
+
+
+/* =========================================================
+ * TIM2 KESME FONKSİYONU
+ * ========================================================= */
+
+/*
+ * TIM2 her 100 mikrosaniyede bir bu fonksiyonu çağırır.
+ *
+ * Bu fonksiyon iki işlem yapar:
+ *
+ * 1. PC13 üzerinde yazılımsal PWM üretir.
+ * 2. LED parlaklığını yavaşça artırıp azaltır.
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /*
+   * Kesmenin TIM2'den geldiğini kontrol et.
+   */
+  if (htim->Instance != TIM2)
+  {
+    return;
+  }
+
+  /* -------------------------------------------------------
+   * PWM ÜRETİMİ
+   * ------------------------------------------------------- */
+
+  pwm_phase++;
+
+  if (pwm_phase >= 100)
+  {
+    pwm_phase = 0;
+  }
+
+  /*
+   * PC13 LED aktif-low olduğu için:
+   *
+   * RESET → LED yanar
+   * SET   → LED söner
+   */
+  if (pwm_phase < brightness)
+  {
+    HAL_GPIO_WritePin(
+        LED_GPIO_Port,
+        LED_Pin,
+        GPIO_PIN_RESET);
+  }
+  else
+  {
+    HAL_GPIO_WritePin(
+        LED_GPIO_Port,
+        LED_Pin,
+        GPIO_PIN_SET);
+  }
+
+
+  /* -------------------------------------------------------
+   * PARLAKLIK GEÇİŞİ
+   * ------------------------------------------------------- */
+
+  fade_counter++;
+
+  /*
+   * Timer kesmesi 10 kHz hızında çalışıyor.
+   *
+   * 200 kesme = 20 milisaniye
+   *
+   * Parlaklık her 20 milisaniyede bir kademe değişir.
+   * 100 kademe yaklaşık 2 saniye sürer.
+   */
+  if (fade_counter >= 400)
+  {
+    fade_counter = 0;
+
+    /*
+     * Parlaklık artırılıyorsa...
+     */
+    if (fade_up == 1)
+    {
+      if (brightness < 100)
+      {
+        brightness++;
+      }
+      else
+      {
+        /*
+         * En yüksek parlaklığa ulaştık.
+         * Bundan sonra azaltmaya başla.
+         */
+        fade_up = 0;
+      }
+    }
+    else
+    {
+      /*
+       * Parlaklık azaltılıyorsa...
+       */
+      if (brightness > 0)
+      {
+        brightness--;
+      }
+      else
+      {
+        /*
+         * LED tamamen söndü.
+         * Bundan sonra artırmaya başla.
+         */
+        fade_up = 1;
+      }
+    }
+  }
+}
+
+
+/* =========================================================
+ * HATA FONKSİYONU
+ * ========================================================= */
+
+void Error_Handler(void)
+{
+  /*
+   * Bir donanım başlatma hatası oluşursa
+   * kesmeleri kapat ve burada bekle.
+   */
+  __disable_irq();
+
+  while (1)
+  {
+  }
+}
+
+
+#ifdef USE_FULL_ASSERT
+
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /*
+   * HAL assert hataları burada yakalanır.
+   *
+   * file: Hatanın oluştuğu dosya
+   * line: Hatanın oluştuğu satır
+   */
+  (void)file;
+  (void)line;
+}
+
+#endif
