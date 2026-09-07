@@ -28,11 +28,13 @@ from PyQt6.QtWidgets import (
 )
 
 from models import (
+    EncoderSample,
     HallTelemetrySample,
     RawHallDebugSample,
     TelemetrySample,
     is_hall_telemetry_header,
     is_telemetry_header,
+    parse_encoder_telemetry,
     parse_firmware_reply,
     parse_firmware_status,
     parse_hall_telemetry,
@@ -477,6 +479,12 @@ class MainWindow(QMainWindow):
                 self._set_firmware_status(
                     "Raw Hall bench-test telemetry active", "#3fb950"
                 )
+            return
+
+        encoder_sample = parse_encoder_telemetry(line)
+        if encoder_sample is not None:
+            self._append_log("RX", line)
+            self.encoder_chart.append_sample(encoder_sample.count)
             return
 
         if is_hall_telemetry_header(line):

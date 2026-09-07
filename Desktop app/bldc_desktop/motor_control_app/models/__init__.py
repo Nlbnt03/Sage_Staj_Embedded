@@ -1,6 +1,7 @@
 """Application data models and protocol parsers."""
 
 from .telemetry import (
+    EncoderSample,
     FirmwareReply,
     FirmwareStatus,
     HallTelemetrySample,
@@ -9,6 +10,7 @@ from .telemetry import (
     commutation_step_from_phases,
     is_hall_telemetry_header,
     is_telemetry_header,
+    parse_encoder_telemetry,
     parse_firmware_reply,
     parse_firmware_status,
     parse_hall_telemetry,
@@ -17,6 +19,7 @@ from .telemetry import (
 )
 
 __all__ = [
+    "EncoderSample",
     "FirmwareReply",
     "FirmwareStatus",
     "HallTelemetrySample",
@@ -25,6 +28,7 @@ __all__ = [
     "commutation_step_from_phases",
     "is_hall_telemetry_header",
     "is_telemetry_header",
+    "parse_encoder_telemetry",
     "parse_firmware_reply",
     "parse_firmware_status",
     "parse_hall_telemetry",

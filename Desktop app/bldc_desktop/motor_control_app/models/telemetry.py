@@ -41,6 +41,15 @@ class RawHallDebugSample:
 
 
 @dataclass(frozen=True, slots=True)
+class EncoderSample:
+    """A validated sample from the ``ENC: cnt=.. deg=.. rpm=..`` debug format."""
+
+    count: int
+    degrees: int
+    rpm: int
+
+
+@dataclass(frozen=True, slots=True)
 class FirmwareStatus:
     """Structured representation of a future STATUS response."""
 
@@ -92,6 +101,11 @@ _HALL_TELEMETRY_RE = re.compile(
 
 _RAW_HALL_DEBUG_RE = re.compile(
     r"^\s*HALL:\s*(?P<raw>[01]{3})\s*\(state=(?P<state>[0-7])\)\s*$",
+    re.IGNORECASE,
+)
+
+_ENCODER_DEBUG_RE = re.compile(
+    r"^\s*ENC:\s*cnt=(?P<cnt>-?\d+)\s+deg=(?P<deg>-?\d+)\s+rpm=(?P<rpm>-?\d+)\s*$",
     re.IGNORECASE,
 )
 
@@ -241,6 +255,20 @@ def parse_raw_hall_debug(line: str) -> RawHallDebugSample | None:
 
     step = _BENCH_HALL_DISPLAY_STEP.get(raw, 0)
     return RawHallDebugSample(raw=raw, step=step, valid=step != 0)
+
+
+def parse_encoder_telemetry(line: str) -> EncoderSample | None:
+    """Parse one ``ENC: cnt=.. deg=.. rpm=..`` bench-test debug line."""
+
+    match = _ENCODER_DEBUG_RE.fullmatch(line)
+    if match is None:
+        return None
+
+    return EncoderSample(
+        count=int(match.group("cnt")),
+        degrees=int(match.group("deg")),
+        rpm=int(match.group("rpm")),
+    )
 
 
 def is_hall_telemetry_header(line: str) -> bool:
