@@ -16,8 +16,8 @@ QGroupBox {
     background-color: #161b22;
     border: 1px solid #30363d;
     border-radius: 9px;
-    margin-top: 13px;
-    padding: 14px 10px 10px 10px;
+    margin-top: 10px;
+    padding: 10px 8px 8px 8px;
     font-weight: 600;
 }
 
@@ -39,17 +39,17 @@ QLabel#currentStepLabel {
     border: 1px solid #30363d;
     border-radius: 12px;
     color: #f0f6fc;
-    font-size: 25px;
+    font-size: 21px;
     font-weight: 700;
-    padding: 17px;
+    padding: 10px;
 }
 
 QComboBox, QSpinBox {
     background-color: #0d1117;
     border: 1px solid #3d444d;
     border-radius: 6px;
-    padding: 6px 8px;
-    min-height: 22px;
+    padding: 4px 8px;
+    min-height: 19px;
     selection-background-color: #1f6feb;
 }
 
@@ -73,8 +73,8 @@ QPushButton {
     border-radius: 6px;
     color: #f0f6fc;
     font-weight: 600;
-    min-height: 24px;
-    padding: 6px 11px;
+    min-height: 20px;
+    padding: 4px 10px;
 }
 
 QPushButton:hover {

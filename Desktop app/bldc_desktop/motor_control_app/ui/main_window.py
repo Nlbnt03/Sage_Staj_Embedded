@@ -28,21 +28,33 @@ from PyQt6.QtWidgets import (
 )
 
 from models import (
+    HallTelemetrySample,
+    RawHallDebugSample,
     TelemetrySample,
+    is_hall_telemetry_header,
     is_telemetry_header,
     parse_firmware_reply,
     parse_firmware_status,
+    parse_hall_telemetry,
+    parse_raw_hall_debug,
     parse_telemetry,
 )
 from services import SerialWorker, discover_serial_ports
-from ui.widgets import PhaseCard, PhaseChart
+from ui.widgets import (
+    CommutationAnimation,
+    EncoderChart,
+    HallChart,
+    HallPanel,
+    PhaseCard,
+    PhaseChart,
+)
 
 
 class MainWindow(QMainWindow):
     """Coordinate the dashboard, protocol parser, and serial worker."""
 
     TELEMETRY_ONLY_WARNING = (
-        "Firmware telemetry-only mode: commands may be ignored."
+        "Automatic telemetry mode: STM32 commands are not required."
     )
     MAX_LOG_LINES = 5000
 
@@ -62,6 +74,7 @@ class MainWindow(QMainWindow):
         self._firmware_command_capable = False
         self._log_lines: deque[str] = deque(maxlen=self.MAX_LOG_LINES)
         self._command_buttons: list[QPushButton] = []
+        self._last_invalid_raw_logged: str | None = None
 
         self._build_ui()
         self._set_connection_visual("disconnected")
@@ -73,24 +86,30 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         """Assemble the control, state, chart, and UART log panels."""
 
-        root_splitter = QSplitter(Qt.Orientation.Vertical)
+        root_splitter = QSplitter(Qt.Orientation.Horizontal)
         root_splitter.setChildrenCollapsible(False)
 
-        dashboard_splitter = QSplitter(Qt.Orientation.Horizontal)
-        dashboard_splitter.setChildrenCollapsible(False)
-        dashboard_splitter.addWidget(self._build_control_panel())
-        dashboard_splitter.addWidget(self._build_phase_panel())
-        dashboard_splitter.addWidget(self._build_chart_panel())
-        dashboard_splitter.setSizes([300, 350, 760])
-        dashboard_splitter.setStretchFactor(0, 0)
-        dashboard_splitter.setStretchFactor(1, 0)
-        dashboard_splitter.setStretchFactor(2, 1)
+        left_dashboard = QSplitter(Qt.Orientation.Horizontal)
+        left_dashboard.setChildrenCollapsible(False)
+        left_dashboard.addWidget(self._build_control_panel())
+        left_dashboard.addWidget(self._build_phase_panel())
+        left_dashboard.setSizes([300, 350])
+        left_dashboard.setStretchFactor(0, 0)
+        left_dashboard.setStretchFactor(1, 1)
 
-        root_splitter.addWidget(dashboard_splitter)
-        root_splitter.addWidget(self._build_terminal_panel())
-        root_splitter.setSizes([620, 245])
-        root_splitter.setStretchFactor(0, 1)
-        root_splitter.setStretchFactor(1, 0)
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.setChildrenCollapsible(False)
+        left_splitter.addWidget(left_dashboard)
+        left_splitter.addWidget(self._build_terminal_panel())
+        left_splitter.setSizes([620, 245])
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 0)
+
+        root_splitter.addWidget(left_splitter)
+        root_splitter.addWidget(self._build_chart_panel())
+        root_splitter.setSizes([650, 760])
+        root_splitter.setStretchFactor(0, 0)
+        root_splitter.setStretchFactor(1, 1)
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -105,9 +124,11 @@ class MainWindow(QMainWindow):
         content.setMinimumWidth(275)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 6, 0)
+        content_layout.setSpacing(6)
 
         connection_group = QGroupBox("SERIAL CONNECTION")
         connection_layout = QVBoxLayout(connection_group)
+        connection_layout.setSpacing(4)
 
         port_label = QLabel("Port")
         port_label.setObjectName("sectionLabel")
@@ -125,6 +146,7 @@ class MainWindow(QMainWindow):
         self.baud_combo.setCurrentText("115200")
 
         serial_buttons = QGridLayout()
+        serial_buttons.setSpacing(5)
         self.connect_button = QPushButton("Connect")
         self.connect_button.setObjectName("primaryButton")
         self.disconnect_button = QPushButton("Disconnect")
@@ -135,7 +157,7 @@ class MainWindow(QMainWindow):
         serial_buttons.addWidget(self.refresh_button, 1, 0, 1, 2)
 
         self.connection_status_label = QLabel()
-        self.connection_status_label.setMinimumHeight(25)
+        self.connection_status_label.setMinimumHeight(18)
         self.firmware_status_label = QLabel()
         self.firmware_status_label.setWordWrap(True)
 
@@ -144,24 +166,22 @@ class MainWindow(QMainWindow):
         connection_layout.addWidget(baud_label)
         connection_layout.addWidget(self.baud_combo)
         connection_layout.addLayout(serial_buttons)
-        connection_layout.addSpacing(5)
+        connection_layout.addSpacing(3)
         connection_layout.addWidget(self.connection_status_label)
         connection_layout.addWidget(self.firmware_status_label)
 
         command_group = QGroupBox("COMMUTATION CONTROL")
         command_layout = QVBoxLayout(command_group)
+        command_layout.setSpacing(4)
 
         command_grid = QGridLayout()
-        start_button = self._make_command_button("Start", "START", primary=True)
-        stop_button = self._make_command_button("Stop", "STOP", danger=True)
+        command_grid.setSpacing(5)
         step_button = self._make_command_button("Next Step", "STEP")
         reset_button = self._make_command_button("Reset", "RESET")
         status_button = self._make_command_button("Query Status", "STATUS")
-        command_grid.addWidget(start_button, 0, 0)
-        command_grid.addWidget(stop_button, 0, 1)
-        command_grid.addWidget(step_button, 1, 0)
-        command_grid.addWidget(reset_button, 1, 1)
-        command_grid.addWidget(status_button, 2, 0, 1, 2)
+        command_grid.addWidget(step_button, 0, 0)
+        command_grid.addWidget(reset_button, 0, 1)
+        command_grid.addWidget(status_button, 1, 0, 1, 2)
 
         period_label = QLabel("Step period (50–1000 ms)")
         period_label.setObjectName("sectionLabel")
@@ -187,16 +207,17 @@ class MainWindow(QMainWindow):
         warning.setWordWrap(True)
         warning.setStyleSheet(
             "background-color: #2d2415; border: 1px solid #9e6a03;"
-            "border-radius: 6px; color: #e3b341; padding: 8px;"
+            "border-radius: 6px; color: #e3b341; padding: 6px; font-size: 11px;"
         )
 
         command_layout.addLayout(command_grid)
-        command_layout.addSpacing(6)
+        command_layout.addSpacing(3)
         command_layout.addWidget(period_label)
         command_layout.addLayout(period_row)
         command_layout.addWidget(self.apply_speed_button)
-        command_layout.addSpacing(6)
+        command_layout.addSpacing(3)
         command_layout.addWidget(warning)
+        command_group.setVisible(False)
 
         content_layout.addWidget(connection_group)
         content_layout.addWidget(command_group)
@@ -216,36 +237,87 @@ class MainWindow(QMainWindow):
         self.period_spinbox.valueChanged.connect(self.period_slider.setValue)
         return scroll
 
-    def _build_phase_panel(self) -> QWidget:
-        """Create the current-step display and three phase cards."""
+    def _build_phase_panel(self) -> QScrollArea:
+        """Create the current-step display, commutation animation, and phase cards."""
 
-        panel = QWidget()
-        panel.setMinimumWidth(315)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(5, 0, 5, 0)
+        content = QWidget()
+        content.setMinimumWidth(300)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(5, 0, 6, 0)
+        layout.setSpacing(5)
 
         self.current_step_label = QLabel("Current Step: —")
         self.current_step_label.setObjectName("currentStepLabel")
         self.current_step_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        self.hall_warning_banner = QLabel()
+        self.hall_warning_banner.setWordWrap(True)
+        self.hall_warning_banner.setStyleSheet(
+            "background-color: #3a1414; border: 1px solid #da3633;"
+            "border-radius: 6px; color: #ff7b72; padding: 6px; font-size: 11px;"
+            "font-weight: 700;"
+        )
+        self.hall_warning_banner.setVisible(False)
+
+        animation_group = QGroupBox("COMMUTATION ANIMATION")
+        animation_layout = QVBoxLayout(animation_group)
+        animation_layout.setContentsMargins(8, 10, 8, 6)
+        self.commutation_animation = CommutationAnimation()
+        animation_layout.addWidget(self.commutation_animation)
+
+        self.hall_panel = HallPanel()
+
         self.phase_a_card = PhaseCard("A")
         self.phase_b_card = PhaseCard("B")
         self.phase_c_card = PhaseCard("C")
 
+        phase_row = QHBoxLayout()
+        phase_row.setSpacing(6)
+        phase_row.addWidget(self.phase_a_card, 1)
+        phase_row.addWidget(self.phase_b_card, 1)
+        phase_row.addWidget(self.phase_c_card, 1)
+
         layout.addWidget(self.current_step_label)
-        layout.addSpacing(6)
-        layout.addWidget(self.phase_a_card, 1)
-        layout.addWidget(self.phase_b_card, 1)
-        layout.addWidget(self.phase_c_card, 1)
-        return panel
+        layout.addWidget(self.hall_warning_banner)
+        layout.addWidget(animation_group, 1)
+        layout.addWidget(self.hall_panel)
+        layout.addLayout(phase_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(content)
+        scroll.setMinimumWidth(310)
+        return scroll
 
     def _build_chart_panel(self) -> QWidget:
-        """Create the real-time plot panel."""
+        """Create vertically stacked phase, Hall, and encoder history plots."""
 
-        group = QGroupBox("PHASE WAVEFORMS")
+        group = QGroupBox("TELEMETRY WAVEFORMS")
         layout = QVBoxLayout(group)
+
         self.phase_chart = PhaseChart()
-        layout.addWidget(self.phase_chart)
+        self.hall_chart = HallChart()
+        self.encoder_chart = EncoderChart()
+        charts = (self.phase_chart, self.hall_chart, self.encoder_chart)
+        for source_chart in charts:
+            for target_chart in charts:
+                if source_chart is not target_chart:
+                    source_chart.scale_combo.currentIndexChanged.connect(
+                        target_chart.scale_combo.setCurrentIndex
+                    )
+
+        chart_splitter = QSplitter(Qt.Orientation.Vertical)
+        chart_splitter.setChildrenCollapsible(False)
+        chart_splitter.addWidget(self.phase_chart)
+        chart_splitter.addWidget(self.hall_chart)
+        chart_splitter.addWidget(self.encoder_chart)
+        chart_splitter.setSizes([280, 280, 280])
+        chart_splitter.setStretchFactor(0, 1)
+        chart_splitter.setStretchFactor(1, 1)
+        chart_splitter.setStretchFactor(2, 1)
+
+        layout.addWidget(chart_splitter)
         return group
 
     def _build_terminal_panel(self) -> QGroupBox:
@@ -279,17 +351,10 @@ class MainWindow(QMainWindow):
         self,
         label: str,
         command: str,
-        *,
-        primary: bool = False,
-        danger: bool = False,
     ) -> QPushButton:
         """Create and track a button for one documented firmware command."""
 
         button = QPushButton(label)
-        if primary:
-            button.setObjectName("primaryButton")
-        elif danger:
-            button.setObjectName("dangerButton")
         button.clicked.connect(
             lambda _checked=False, value=command: self._send_command(value)
         )
@@ -388,11 +453,39 @@ class MainWindow(QMainWindow):
         self._set_firmware_status("Connected; awaiting telemetry", "#58a6ff")
         self._update_control_availability()
         self._append_log("SYSTEM", f"Connected to {port}.")
-        self._append_log("WARNING", self.TELEMETRY_ONLY_WARNING)
+        self._append_log("SYSTEM", self.TELEMETRY_ONLY_WARNING)
         self.statusBar().showMessage(self.TELEMETRY_ONLY_WARNING, 8000)
 
     def _on_serial_line(self, line: str) -> None:
         """Classify one received line and update only validated state."""
+
+        hall_sample = parse_hall_telemetry(line)
+        if hall_sample is not None:
+            self._append_log("RX", line)
+            self._apply_hall_telemetry(hall_sample)
+            if not self._firmware_command_capable:
+                self._set_firmware_status(
+                    "Hall telemetry active", "#3fb950"
+                )
+            return
+
+        raw_hall_sample = parse_raw_hall_debug(line)
+        if raw_hall_sample is not None:
+            self._append_log("RX", line)
+            self._apply_raw_hall_debug(raw_hall_sample)
+            if not self._firmware_command_capable:
+                self._set_firmware_status(
+                    "Raw Hall bench-test telemetry active", "#3fb950"
+                )
+            return
+
+        if is_hall_telemetry_header(line):
+            self._append_log("RX", line)
+            if not self._firmware_command_capable:
+                self._set_firmware_status(
+                    "Automatic Hall telemetry detected", "#3fb950"
+                )
+            return
 
         sample = parse_telemetry(line)
         if sample is not None:
@@ -461,6 +554,84 @@ class MainWindow(QMainWindow):
             sample.phase_b,
             sample.phase_c,
         )
+        self.commutation_animation.set_step(
+            sample.step, sample.phase_a, sample.phase_b, sample.phase_c, valid=True
+        )
+        self._set_hall_warning(True, "")
+
+    def _apply_hall_telemetry(self, sample: HallTelemetrySample) -> None:
+        """Update all live indicators from one validated Hall telemetry sample."""
+
+        if sample.valid:
+            self.current_step_label.setText(f"Current Step: STEP {sample.step}")
+        else:
+            self.current_step_label.setText("Current Step: — (invalid Hall code)")
+
+        self.hall_panel.set_sample(
+            sample.raw, sample.rpm, sample.direction, sample.valid
+        )
+        self.phase_a_card.set_state(sample.phase_a)
+        self.phase_b_card.set_state(sample.phase_b)
+        self.phase_c_card.set_state(sample.phase_c)
+        self.phase_chart.append_sample(
+            sample.phase_a,
+            sample.phase_b,
+            sample.phase_c,
+        )
+        self.hall_chart.append_sample(sample.step)
+        self.commutation_animation.set_step(
+            sample.step,
+            sample.phase_a,
+            sample.phase_b,
+            sample.phase_c,
+            valid=sample.valid,
+        )
+        self._set_hall_warning(sample.valid, sample.raw)
+
+    def _apply_raw_hall_debug(self, sample: RawHallDebugSample) -> None:
+        """Update the Hall-related indicators from one raw bench-test sample.
+
+        This format only carries the raw 3-bit Hall code; it has no phase or
+        rpm/direction data, so those indicators are left at "unknown" rather
+        than fabricated.
+        """
+
+        if sample.valid:
+            self.current_step_label.setText(f"Current Step: STEP {sample.step}")
+        else:
+            self.current_step_label.setText("Current Step: — (invalid Hall code)")
+
+        self.hall_panel.set_sample(sample.raw, 0, "UNKNOWN", sample.valid)
+        self.hall_chart.append_sample(sample.step)
+        self.commutation_animation.set_step(
+            sample.step, None, None, None, valid=sample.valid
+        )
+        self._set_hall_warning(sample.valid, sample.raw)
+
+    def _set_hall_warning(self, valid: bool, raw: str) -> None:
+        """Show, hide, and log the invalid Hall-pattern (000/111) warning."""
+
+        if valid:
+            self.hall_warning_banner.setVisible(False)
+            self._last_invalid_raw_logged = None
+            return
+
+        self.hall_warning_banner.setText(
+            f"⚠ Invalid Hall pattern detected: raw={raw or '???'} — 000 and 111 "
+            "are not valid 3-bit Hall codes."
+        )
+        self.hall_warning_banner.setVisible(True)
+
+        if raw != self._last_invalid_raw_logged:
+            self._append_log(
+                "WARNING",
+                f"Invalid Hall code detected (raw={raw}); 000/111 patterns "
+                "are not valid Hall codes.",
+            )
+            self.statusBar().showMessage(
+                f"Invalid Hall pattern detected: raw={raw}", 6000
+            )
+            self._last_invalid_raw_logged = raw
 
     def _send_command(self, command: str) -> None:
         """Queue a protocol command only while a live connection exists."""

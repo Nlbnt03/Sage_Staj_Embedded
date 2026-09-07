@@ -2,7 +2,8 @@
 
 PyQt6 ile geliştirilmiş bu macOS masaüstü uygulaması, STM32 NUCLEO-G491RE
 kartının altı adımlı BLDC komütasyon telemetrisini UART üzerinden izler. Faz
-durumlarını kartlar ve gerçek zamanlı grafik üzerinde gösterir; gelecekteki RX
+durumlarını kartlar ve gerçek zamanlı grafik üzerinde, Hall komütasyon adımlarını
+ise ayrı bir gerçek zamanlı grafik üzerinde gösterir; gelecekteki RX
 komut protokolünü göndermeye hazırdır.
 
 Uygulama açılışta seri porta otomatik bağlanmaz. `/dev/cu.usbmodem...` portları
@@ -45,7 +46,8 @@ Ardından:
 2. NUCLEO kartına ait `/dev/cu.usbmodem...` portunu seçin.
 3. Baud rate değerini firmware ile eşleştirin; varsayılan `115200`'dür.
 4. **Connect** düğmesine basın.
-5. Geçerli `STEP ...` satırları geldiğinde faz kartları ve grafik güncellenir.
+5. Geçerli `HALL,raw=...` satırları geldiğinde faz kartları ile faz ve Hall
+   grafikleri güncellenir.
 6. Oturumu kapatmak için **Disconnect** düğmesini kullanın.
 
 ## Arayüz davranışı
@@ -54,7 +56,17 @@ Ardından:
   arayüz thread'i seri okuma beklemez.
 - Bağlantı yeşil, bağlantı kurulma/kapanma süreci sarı, bağlantısız durum kırmızı
   gösterilir.
-- Grafik bellekte son 60 saniyeyi tutar ve **Time scale** seçimiyle son
+- UART terminali sol alt bölümde; faz, Hall ve encoder grafikleri sağ tarafta
+  alt alta, yeniden boyutlandırılabilir bir alanda gösterilir.
+- Hall grafiği STM telemetrisindeki `step` değerini 0–6 arasında izler. Geçerli
+  ileri akış yükselen, geri akış düşen basamaklar halinde görünür; `0`
+  geçersiz Hall kodudur. Firmware `step` alanı sabit kaldığı halde fazlar
+  değişiyorsa etkin adım `a/b/c` kombinasyonundan türetilir; terminalde
+  `phase_step` olarak belirtilir.
+- Encoder grafiği arayüzde hazırdır. Mevcut STM protokolü encoder alanı
+  içermediğinden veri gelene kadar bekleme durumunda kalır.
+- Üç grafiğin zaman ölçekleri birlikte değişir.
+- Her grafik bellekte son 60 saniyeyi tutar ve **Time scale** seçimiyle son
   1, 2, 5, 10, 30 veya 60 saniyeyi gösterebilir. Kısa ölçekler sık komütasyon
   geçişlerini yatayda açar. Süresi dolan örnekler silinir ve tampon en fazla
   6000 örnek tutar.
@@ -67,16 +79,12 @@ Ardından:
 - Seri kablo çıkarılırsa worker hatayı yakalar, portu kapatır, kontrolleri
   bağlantısız duruma getirir ve kullanıcıya anlaşılır bir hata penceresi gösterir.
 
-## Kontrol komutları
+## Otomatik telemetri modu
 
-**Start**, **Stop**, **Next Step**, **Reset**, **Apply Speed** ve
-**Query Status** yalnızca aktif bağlantıda kullanılabilir. Mevcut firmware
-yalnızca TX telemetrisi gönderdiği için uygulamada şu uyarı sürekli görünür:
-
-> Firmware telemetry-only mode: commands may be ignored.
-
-Komutların ve gelecekte beklenen cevapların tam tanımı [protocol.md](protocol.md)
-dosyasındadır.
+Arayüz STM32'ye çalışma komutu göndermez. **Connect** yalnızca seri portu açar;
+faz üretimi STM32 açıldığı anda otomatik başlar. ESP'den gelen Hall değişimleri
+STM32 tarafından `HALL,...` satırlarına dönüştürülür ve grafikler bu satırlardaki
+`step` ile `a/b/c` alanlarından güncellenir.
 
 ## Sorun giderme
 

@@ -18,15 +18,60 @@ olduğu gelecekteki RX kontrol protokolünü tanımlar.
 Port adı protokolün parçası değildir. macOS üzerinde uygulama portları dinamik
 olarak tarar ve `/dev/cu.usbmodem...` ile başlayanları önceliklendirir.
 
-## Mevcut TX telemetrisi
+## Mevcut TX telemetrisi (Hall, g491 firmware)
 
-Firmware başlangıçta şu başlığı gönderebilir:
+Firmware başlangıçta şu başlığı bir kez gönderir:
+
+```text
+BLDC HALL TELEMETRY | HALL=ABC | A/B/C: 1=HIGH -1=LOW 0=FLOAT
+```
+
+Her Hall geçişinde (veya `HALL_SIMULATION_ENABLED=1` test modunda her simüle
+adımda) tek bir anahtar=değer satırı gönderilir:
+
+```text
+HALL,raw=<raw>,step=<step>,dir=<dir>,rpm=<rpm>,a=<phase_a>,b=<phase_b>,c=<phase_c>,valid=<valid>
+```
+
+Alan sınırları:
+
+| Alan | Geçerli değerler | Açıklama |
+|---|---|---|
+| `raw` | 3 haneli `0`/`1` dizisi (ör. `001`) | Ham Hall kodu, sırasıyla A/B/C biti |
+| `step` | `0`–`6` | 6 adımlı komütasyon adımı; `0` = geçersiz Hall kodu |
+| `dir` | `FWD`, `REV`, `UNKNOWN` | Bir önceki adıma göre dönüş yönü |
+| `rpm` | pozitif tam sayı | Hesaplanan mekanik RPM (`MOTOR_POLE_PAIR_COUNT`'a göre) |
+| `phase_a`/`phase_b`/`phase_c` | `-1`, `0`, `1` | O anda uygulanan faz durumu |
+| `valid` | `0`, `1` | `0` iken Hall kodu geçersiz (`000`/`111`); diğer tüm alanlar sıfırlanmış olur |
+
+Örnek geçerli akış:
+
+```text
+HALL,raw=001,step=1,dir=FWD,rpm=120,a=1,b=-1,c=0,valid=1
+HALL,raw=101,step=2,dir=FWD,rpm=118,a=1,b=0,c=-1,valid=1
+```
+
+Ayrıştırıcı anahtar kelimelerde büyük/küçük harfe toleranslıdır. Alan sırası ve
+değer aralıkları sıkı biçimde doğrulanır. Eşleşmeyen satır terminalde `[RX?]`
+olarak gösterilir ve canlı durumu değiştirmez.
+
+Firmware'in bildirdiği `raw`, `step` ve `a/b/c` alanları aynı komütasyon adımını
+göstermelidir. Birbiriyle uyuşmayan satırlar `[RX?]` olarak işaretlenir ve
+grafikleri değiştirmez. Hall grafiği doğrulanmış `step` alanını doğrudan kullanır.
+
+## Eski TX telemetrisi (yalnızca faz-only F4 firmware)
+
+Bu format artık g491 firmware tarafından üretilmez; yalnızca eski
+`staj_motor_simule` (F4) projesiyle veya benzer telemetry-only firmware ile
+geriye dönük uyumluluk için ayrıştırıcıda tutulur.
+
+Başlık:
 
 ```text
 MOTOR FAZ SIMULASYONU | 1=HIGH -1=LOW 0=FLOAT
 ```
 
-Her telemetri satırı aşağıdaki biçimdedir:
+Telemetri satırı:
 
 ```text
 STEP <step> | A: <phase_a> | B: <phase_b> | C: <phase_c>
@@ -41,83 +86,13 @@ Alan sınırları:
 | `phase_b` | `-1`, `0`, `1` |
 | `phase_c` | `-1`, `0`, `1` |
 
-Altı adımlı beklenen dizi:
+## Veri akışı
+
+UI bağlantısı tek yönlü telemetri alımı içindir; STM32'ye `START`, `STOP`,
+`RESET`, `STEP`, `STATUS` veya periyot komutu gönderilmez. Ana donanım akışı:
 
 ```text
-STEP 1 | A: 1 | B: -1 | C: 0
-STEP 2 | A: 1 | B: 0 | C: -1
-STEP 3 | A: 0 | B: 1 | C: -1
-STEP 4 | A: -1 | B: 1 | C: 0
-STEP 5 | A: -1 | B: 0 | C: 1
-STEP 6 | A: 0 | B: -1 | C: 1
+STM32 PA4/PB4/PB5 (faz HIGH/LOW/FLOAT) -> ESP
+ESP Hall A/B/C -> STM32 PC0/PC1/PC2
+STM32 LPUART1/VCP -> UI HALL telemetrisi
 ```
-
-Ayrıştırıcı anahtar kelimelerde büyük/küçük harfe ve ayraç çevresindeki ek
-boşluklara toleranslıdır. Alan sırası, step aralığı ve faz değerleri sıkı biçimde
-doğrulanır. Eşleşmeyen satır terminalde `[RX?]` olarak gösterilir ve canlı durumu
-değiştirmez.
-
-## Gelecekteki RX komutları
-
-Her komut ASCII olarak ve `\r\n` ile sonlandırılarak gönderilir:
-
-```text
-START\r\n
-STOP\r\n
-STEP\r\n
-RESET\r\n
-PERIOD 200\r\n
-STATUS\r\n
-```
-
-| Komut | Amaç |
-|---|---|
-| `START` | Otomatik komütasyonu başlatır. |
-| `STOP` | Otomatik komütasyonu durdurur. |
-| `STEP` | Bir sonraki komütasyon adımına ilerler. |
-| `RESET` | Firmware durumunu başlangıç değerine getirir. |
-| `PERIOD <ms>` | Step periyodunu ayarlar; UI `50`–`1000` ms kabul eder. |
-| `STATUS` | Çalışma durumu, periyot ve step bilgisini ister. |
-
-Uygulama komutları yalnızca seri bağlantı açıkken kuyruğa alır. Komut kuyruğu
-worker thread tarafından yazılır; bir UI düğmesi seri yazmayı beklemez.
-
-## Gelecekteki firmware cevapları
-
-Başarılı komut örnekleri:
-
-```text
-OK START
-OK STOP
-OK PERIOD 200
-```
-
-Durum cevabı:
-
-```text
-STATUS RUN=1 PERIOD=200 STEP=3
-```
-
-Alanlar:
-
-- `RUN`: yalnızca `0` veya `1`
-- `PERIOD`: pozitif ondalık milisaniye değeri
-- `STEP`: yalnızca `1`–`6`
-
-Hata cevabı:
-
-```text
-ERR UNKNOWN_COMMAND
-```
-
-`OK`, `ERR` veya geçerli `STATUS` cevabı alındığında uygulama firmware'i komut
-destekli olarak işaretler. `ERR` cevabı terminalde korunur ve durum çubuğunda
-kullanıcıya bildirilir.
-
-## Telemetry-only uyumluluğu
-
-Mevcut firmware komutları okumadığında masaüstü uygulaması yine de komutları
-bağlı port üzerinden gönderebilir; cevap gelmemesi bağlantı hatası sayılmaz.
-Arayüz bu nedenle açıkça şu uyarıyı gösterir:
-
-> Firmware telemetry-only mode: commands may be ignored.

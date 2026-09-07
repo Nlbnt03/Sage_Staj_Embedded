@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import re
 import threading
+import time
 
 import serial
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -19,7 +20,7 @@ class SerialWorker(QThread):
     error_occurred = pyqtSignal(str)
     connection_closed = pyqtSignal(str)
 
-    _EXACT_COMMANDS = {"START", "STOP", "STEP", "RESET", "STATUS"}
+    _EXACT_COMMANDS = {"STEP", "RESET", "STATUS"}
     _PERIOD_COMMAND_RE = re.compile(r"^PERIOD\s+(\d+)$")
     _MAX_PENDING_COMMANDS = 100
     _MAX_LINE_BYTES = 4096
@@ -75,21 +76,36 @@ class SerialWorker(QThread):
                 rtscts=False,
                 dsrdtr=False,
             )
+
+            # ST-LINK VCP, port kapalıyken eski telemetriyi kısa süre tamponda
+            # tutabilir. Açılışta bu birikimi temizle; STM güncel Hall durumunu
+            # en geç 500 ms içinde yeniden gönderecektir.
+            serial_port.reset_input_buffer()
+            time.sleep(0.05)
+            serial_port.reset_input_buffer()
             self.connected.emit(self._port)
+
+            buffer = bytearray()
 
             while not self._stop_requested.is_set():
                 self._write_pending_commands(serial_port)
 
-                raw = serial_port.read_until(
-                    expected=b"\n",
-                    size=self._MAX_LINE_BYTES,
-                )
-                if not raw:
+                chunk = serial_port.read(serial_port.in_waiting or 1)
+                if not chunk:
                     continue
+                buffer.extend(chunk)
 
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if line:
-                    self.line_received.emit(line)
+                while b"\n" in buffer:
+                    raw_line, _, remainder = buffer.partition(b"\n")
+                    buffer = bytearray(remainder)
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                    if line:
+                        self.line_received.emit(line)
+
+                if len(buffer) > self._MAX_LINE_BYTES:
+                    # No newline ever arrived for this much data; drop it rather
+                    # than let an unterminated stream grow the buffer forever.
+                    buffer.clear()
 
         except (serial.SerialException, OSError, ValueError) as exc:
             if self._stop_requested.is_set():
