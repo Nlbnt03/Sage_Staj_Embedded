@@ -63,8 +63,16 @@ void Error_Handler(void);
 #define HALL1_GPIO_Port GPIOC
 #define HALL2_Pin GPIO_PIN_0
 #define HALL2_GPIO_Port GPIOB
+#define ENCODER_A_Pin GPIO_PIN_0
+#define ENCODER_A_GPIO_Port GPIOA
+#define ENCODER_B_Pin GPIO_PIN_1
+#define ENCODER_B_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
+/* 1: sanal motor + PID; 0: yalnizca mevcut fiziksel Hall/enkoder okuma. */
+#ifndef MOTOR_SIMULATION
+#define MOTOR_SIMULATION 1
+#endif
 
 /* USER CODE END Private defines */
 

@@ -1,0 +1,6 @@
+# CubeIDE discovers motor_sim.c on project refresh. Also support the existing
+# generated makefiles before refresh, without editing generated build files.
+ifeq ($(filter %/motor_sim.o,$(OBJS)),)
+USER_OBJS += ./Core/Src/motor_sim.o
+-include Core/Src/motor_sim.d
+endif

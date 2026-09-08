@@ -129,6 +129,55 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
 }
 
 /**
+  * @brief TIM_ENCODER MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param tim_encoderHandle: TIM_ENCODER handle pointer
+  * @retval None
+  */
+void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* tim_encoderHandle)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(tim_encoderHandle->Instance==TIM2)
+  {
+    /* Peripheral clock enable */
+    __HAL_RCC_TIM2_CLK_ENABLE();
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**TIM2 GPIO Configuration
+    PA0     ------> TIM2_CH1
+    PA1     ------> TIM2_CH2
+    */
+    GPIO_InitStruct.Pin = ENCODER_A_Pin|ENCODER_B_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  }
+}
+
+/**
+  * @brief TIM_ENCODER MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param tim_encoderHandle: TIM_ENCODER handle pointer
+  * @retval None
+  */
+void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* tim_encoderHandle)
+{
+  if(tim_encoderHandle->Instance==TIM2)
+  {
+    /* Peripheral clock disable */
+    __HAL_RCC_TIM2_CLK_DISABLE();
+
+    /**TIM2 GPIO Configuration
+    PA0     ------> TIM2_CH1
+    PA1     ------> TIM2_CH2
+    */
+    HAL_GPIO_DeInit(GPIOA, ENCODER_A_Pin|ENCODER_B_Pin);
+  }
+}
+
+/**
   * @brief UART MSP De-Initialization
   * This function freeze the hardware resources used in this example
   * @param huart: UART handle pointer

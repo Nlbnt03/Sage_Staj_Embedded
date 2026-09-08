@@ -1,0 +1,3 @@
+../Core/Src/motor_sim.c:7:14:Clamp	4
+../Core/Src/motor_sim.c:16:6:MotorSim_Init	1
+../Core/Src/motor_sim.c:21:6:MotorSim_Step	8
