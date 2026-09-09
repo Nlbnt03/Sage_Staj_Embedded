@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STM32–ESP32 HIL Akım PI Simülasyonu — CubeMX Ayarları</title>
+  <style>
+    :root { --navy:#123047; --blue:#087ea4; --cyan:#e9f7fb; --line:#cfdce3; --ink:#17232d; --muted:#5b6b76; --warn:#fff3cd; --ok:#e8f6ee; }
+    * { box-sizing: border-box; }
+    body { margin:0; color:var(--ink); font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; background:#eef3f6; }
+    main { width:min(1040px,calc(100% - 32px)); margin:28px auto; background:white; padding:52px 64px; box-shadow:0 3px 20px #0002; }
+    h1 { color:var(--navy); font-size:34px; line-height:1.15; margin:0 0 10px; }
+    h2 { color:var(--navy); border-bottom:2px solid var(--blue); padding-bottom:6px; margin-top:42px; }
+    h3 { color:#164e69; margin-top:26px; }
+    p { margin:9px 0; }
+    .subtitle { color:var(--muted); font-size:18px; margin-bottom:28px; }
+    .meta { border-left:5px solid var(--blue); background:var(--cyan); padding:12px 16px; }
+    .flow { background:var(--navy); color:white; padding:20px; border-radius:8px; text-align:center; font-weight:650; letter-spacing:.1px; }
+    .flow span { display:inline-block; padding:5px 8px; }
+    .arrow { color:#7ed7f2; font-size:20px; }
+    table { width:100%; border-collapse:collapse; margin:14px 0 22px; font-size:14px; }
+    th { background:var(--navy); color:white; text-align:left; }
+    th,td { border:1px solid var(--line); padding:9px 10px; vertical-align:top; }
+    tr:nth-child(even) td { background:#f7fafb; }
+    code { color:#073b55; background:#edf4f7; padding:1px 5px; border-radius:4px; }
+    .formula { text-align:center; background:#f4f7f9; border:1px solid var(--line); padding:12px; font:600 16px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .note,.warning,.success { border-radius:6px; padding:12px 15px; margin:16px 0; }
+    .note { background:var(--cyan); border-left:5px solid var(--blue); }
+    .warning { background:var(--warn); border-left:5px solid #e1a900; }
+    .success { background:var(--ok); border-left:5px solid #2e9d59; }
+    figure { margin:22px 0 34px; break-inside:avoid; page-break-inside:avoid; }
+    figure img { display:block; max-width:100%; max-height:720px; margin:auto; border:1px solid #b7c5cd; border-radius:4px; }
+    figcaption { color:var(--muted); font-size:13px; text-align:center; margin-top:8px; }
+    ul,ol { padding-left:24px; }
+    li { margin:5px 0; }
+    .checklist li { list-style:"☐  "; padding-left:4px; }
+    .pagebreak { break-before:page; page-break-before:always; }
+    footer { color:var(--muted); margin-top:50px; padding-top:12px; border-top:1px solid var(--line); font-size:12px; }
+    @media print {
+      body { background:white; font-size:11pt; }
+      main { width:auto; margin:0; padding:12mm 13mm; box-shadow:none; }
+      h1 { font-size:25pt; } h2 { break-after:avoid; page-break-after:avoid; }
+      table,figure,.note,.warning,.success { break-inside:avoid; page-break-inside:avoid; }
+      figure img { max-height:175mm; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>STM32–ESP32 HIL Akım PI Simülasyonu</h1>
+  <div class="subtitle">STM32CubeMX pin, timer, UART, DMA ve NVIC ayarları — ne seçildi, neden seçildi?</div>
+  <div class="meta">
+    <strong>Kart:</strong> NUCLEO-G491RE / STM32G491RETx &nbsp;•&nbsp;
+    <strong>CubeMX:</strong> 6.18.1 &nbsp;•&nbsp;
+    <strong>Sistem clock:</strong> 170 MHz &nbsp;•&nbsp;
+    <strong>Kontrol periyodu:</strong> 1 ms (1 kHz)<br>
+    <strong>Belge tarihi:</strong> 9 Eylül 2026
+  </div>
+
+  <h2>1. Amaç ve sistemin görev paylaşımı</h2>
+  <p>Motor sürücüsü bağlı değilken STM32 üzerindeki akım PI yazılımını çalıştırabilmek için ESP32, motorun elektriksel akım davranışını taklit eden haricî bir “plant” olarak kullanılacaktır. Hall sensörleri ve encoder gerçek motordan okunur; yalnızca ölçülen akım ESP32 tarafından modellenir.</p>
+  <div class="flow">
+    <span>Gerçek Hall + encoder</span><span class="arrow">→</span>
+    <span>STM32 PI</span><span class="arrow">→</span>
+    <span>duty + RPM + sektör</span><span class="arrow">→</span>
+    <span>ESP32 motor modeli</span><span class="arrow">→</span>
+    <span>ölçülen akım</span><span class="arrow">→</span>
+    <span>STM32</span><br>
+    <span>STM32 Hall + RPM + akım + duty</span><span class="arrow">→</span><span>Desktop UI</span>
+  </div>
+  <p>İki bağımsız UART kullanılması önemlidir: STM32–ESP32 kontrol trafiği, UI telemetrisinden ayrılır. Böylece UI’nin gecikmesi PI geri besleme zincirini doğrudan bozmaz.</p>
+
+  <h2>2. Pin atamaları</h2>
+  <table>
+    <thead><tr><th>İşlev</th><th>STM32 pini / çevrebirim</th><th>Neden?</th></tr></thead>
+    <tbody>
+      <tr><td>Hall 0</td><td><code>PC0</code>, GPIO Input, Pull-up</td><td>Rotor sektör bilgisinin birinci biti.</td></tr>
+      <tr><td>Hall 1</td><td><code>PC1</code>, GPIO Input, Pull-up</td><td>Rotor sektör bilgisinin ikinci biti.</td></tr>
+      <tr><td>Hall 2</td><td><code>PB0</code>, GPIO Input, Pull-up</td><td>Rotor sektör bilgisinin üçüncü biti.</td></tr>
+      <tr><td>Encoder A</td><td><code>PA0 = TIM2_CH1</code>, Pull-up</td><td>TIM2 donanımsal quadrature sayacının A girişi.</td></tr>
+      <tr><td>Encoder B</td><td><code>PA1 = TIM2_CH2</code>, Pull-up</td><td>Yön ve dört kat kenar sayımı için B girişi.</td></tr>
+      <tr><td>UI TX/RX</td><td><code>PA2/PA3 = LPUART1</code></td><td>Nucleo ST-LINK Virtual COM Port üzerinden desktop UI.</td></tr>
+      <tr><td>ESP TX/RX</td><td><code>PC4/PC5 = USART1</code></td><td>ESP32 ile ayrı, çift yönlü HIL veri hattı.</td></tr>
+    </tbody>
+  </table>
+
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/01_gpio_uart_pins.png" alt="GPIO ve UART pin ayarları">
+    <figcaption>Şekil 1 — PA0/PA1 encoder pinleri ile PC4/PC5 ESP UART pinlerinin GPIO görünümü.</figcaption>
+  </figure>
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/02_pinout_overview.png" alt="STM32 pinout genel görünümü">
+    <figcaption>Şekil 2 — Hall, encoder, UI LPUART ve ESP USART1 pinlerinin genel yerleşimi.</figcaption>
+  </figure>
+
+  <h3>Hall girişleri neden Pull-up?</h3>
+  <p>Hall çıkışları açık-kollektör/açık-drain olabiliyorsa girişin boşta kararlı “1” seviyesinde kalmasını sağlar. Haricî kartta zaten uygun pull-up varsa dahili pull-up destekleyici olur; sürücü çıkışı push-pull ise elektriksel uyumluluk ayrıca doğrulanmalıdır. Hall pinleri bu aşamada periyodik okunur; EXTI kesmesi zorunlu değildir.</p>
+  <div class="note"><strong>Önemli:</strong> Motor sürücüsü bağlı olmadığı için STM32 şu anda gerçek fazlara High/Low/Float uygulamaz. Hall dizisi yalnızca sektör/faz çiftini belirlemek ve telemetri üretmek için okunur.</div>
+
+  <h2 class="pagebreak">3. TIM2 — quadrature encoder</h2>
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/03_tim2_initial.png" alt="TIM2 ilk ekran">
+    <figcaption>Şekil 3 — PA0/PA1 atanmışken TIM2 çevrebiriminin henüz Encoder Mode olarak etkinleştirilmediği durum.</figcaption>
+  </figure>
+  <p><code>Combined Channels → Encoder Mode</code> seçildi. “Remap” seçenekleri farklı pin yolları içindir; PA0 ve PA1 doğrudan CH1/CH2 kullanıldığı için sade Encoder Mode doğrudur. “Index” seçilmedi çünkü kullanılan encoder bağlantısında ayrı Z/index darbesi yoktur.</p>
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/04_tim2_encoder_mode.png" alt="TIM2 encoder mode seçimi">
+    <figcaption>Şekil 4 — Seçilen seçenek: standart Encoder Mode; remap ve index seçenekleri kullanılmadı.</figcaption>
+  </figure>
+
+  <table>
+    <thead><tr><th>TIM2 ayarı</th><th>Seçilen değer</th><th>Gerekçe</th></tr></thead>
+    <tbody>
+      <tr><td>Encoder Mode</td><td><code>TI1 and TI2</code></td><td>Her iki encoder kanalından yön ve konum bilgisi alınır; quadrature sayım yapılır.</td></tr>
+      <tr><td>Prescaler</td><td><code>0</code></td><td>Giriş sayımları bölünmeden sayılır; çözünürlük korunur.</td></tr>
+      <tr><td>Counter Period</td><td><code>4294967295</code></td><td>TIM2 32 bittir. Maksimum ARR, taşmalar arasındaki süreyi uzatır. Yazılım fark hesabını 32 bit sarılmayı dikkate alarak yapar.</td></tr>
+      <tr><td>Counter Mode</td><td><code>Up</code></td><td>Encoder arayüzünde gerçek yönü donanım belirler; temel sayaç ayarı Up bırakılır.</td></tr>
+      <tr><td>IC1 / IC2 Polarity</td><td><code>Rising Edge</code></td><td>Standart quadrature giriş polaritesi. Encoder yönü ters çıkarsa kablolar veya yazılım işareti düzeltilir.</td></tr>
+      <tr><td>IC Selection</td><td><code>Direct</code></td><td>CH1 ve CH2 kendi fiziksel girişlerinden okunur.</td></tr>
+      <tr><td>Input Prescaler</td><td><code>No division / DIV1</code></td><td>Hiçbir geçerli encoder kenarı bölünmez.</td></tr>
+      <tr><td>Input Filter</td><td><code>6</code></td><td>Kablo/parazit kaynaklı çok kısa darbeleri süzer. Çok yüksek encoder frekansında test edilip gerekirse azaltılmalıdır.</td></tr>
+      <tr><td>Auto-reload preload</td><td><code>Disable</code></td><td>ARR çalışma sırasında değiştirilmediğinden preload gerekli değildir.</td></tr>
+      <tr><td>NVIC / DMA</td><td>Kapalı</td><td>Encoder değeri 1 ms görevinde doğrudan <code>TIM2-&gt;CNT</code> üzerinden okunacağından TIM2 kesmesi ve DMA gerekmez.</td></tr>
+    </tbody>
+  </table>
+
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/05_tim2_filters.png" alt="TIM2 giriş parametreleri">
+    <figcaption>Şekil 5 — CH1 ve CH2 için Rising Edge, Direct, No division ve Filter=6 ayarları.</figcaption>
+  </figure>
+
+  <div class="formula">RPM = (Δcount × 60) / (encoder_counts_per_rev × Δt)</div>
+  <p><code>encoder_counts_per_rev</code> değeri mekanik bir turdaki gerçek TIM2 sayım adedi olmalıdır. Encoder kataloğu PPR veriyorsa TI1+TI2 quadrature kullanımında çoğunlukla dört kat sayım dikkate alınır. Yanlış CPR değeri, ölçülen RPM’yi aynı oranda yanlış yapar.</p>
+
+  <h2>4. USART1 — STM32 ile ESP32 arasındaki HIL hattı</h2>
+  <table>
+    <thead><tr><th>Ayar</th><th>Değer</th><th>Neden?</th></tr></thead>
+    <tbody>
+      <tr><td>Mode</td><td><code>Asynchronous</code></td><td>İki cihaz arasında ayrı clock hattı gerektirmeyen standart UART.</td></tr>
+      <tr><td>Baud rate</td><td><code>4,000,000</code></td><td>1 kHz komut/geri bildirim paketlerini düşük aktarım gecikmesiyle taşımak için.</td></tr>
+      <tr><td>Frame</td><td><code>8 data, None parity, 1 stop</code></td><td>ESP32 ile uyumlu standart 8N1 formatı.</td></tr>
+      <tr><td>Data Direction</td><td><code>Receive and Transmit</code></td><td>STM duty/RPM/sektör gönderir; ESP modellenmiş akımı geri gönderir.</td></tr>
+      <tr><td>Hardware Flow Control</td><td><code>Disable</code></td><td>RTS/CTS için ek pin kullanılmaz; akış protokol ve DMA ile yönetilir.</td></tr>
+      <tr><td>Oversampling</td><td><code>16</code></td><td>UART örnekleme dayanıklılığı; 170 MHz clock ile 4 Mbaud üretimi uygundur.</td></tr>
+      <tr><td>PC4 TX hızı</td><td><code>Very High</code></td><td>4 Mbaud kenarlarının yeterince hızlı oluşması için.</td></tr>
+      <tr><td>PC5 RX Pull-up</td><td><code>Pull-up</code></td><td>ESP kapalı/ayrıkken RX hattının boşta rastgele seviye üretmesini önler.</td></tr>
+    </tbody>
+  </table>
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/06_usart1.png" alt="USART1 CubeMX yapılandırması">
+    <figcaption>Şekil 6 — USART1 Asynchronous, 4 Mbaud, 8N1 ve çift yönlü veri ayarları.</figcaption>
+  </figure>
+
+  <h3>Fiziksel bağlantı</h3>
+  <table>
+    <thead><tr><th>STM32 NUCLEO-G491RE</th><th>ESP32</th></tr></thead>
+    <tbody>
+      <tr><td>PC4 / USART1_TX</td><td>UART RX (örneğin GPIO16)</td></tr>
+      <tr><td>PC5 / USART1_RX</td><td>UART TX (örneğin GPIO17)</td></tr>
+      <tr><td>GND</td><td>GND</td></tr>
+    </tbody>
+  </table>
+  <div class="warning"><strong>Elektriksel kural:</strong> TX daima karşı tarafın RX pinine bağlanır ve ortak GND zorunludur. Her iki kart ayrı USB’den besleniyorsa 3V3 çıkışlarını birbirine bağlamayın. Hatlar 3.3 V lojik olmalıdır.</div>
+
+  <h2>5. DMA — CPU’yu UART byte trafiğinden ayırmak</h2>
+  <table>
+    <thead><tr><th>İstek / kanal</th><th>Yön ve ayarlar</th><th>Rol</th></tr></thead>
+    <tbody>
+      <tr><td>USART1_RX / DMA1 Channel 1</td><td>Peripheral→Memory, Normal, Byte, MemInc Enable, PeriphInc Disable, High</td><td>ESP’den gelen akım paketini arabelleğe taşır.</td></tr>
+      <tr><td>USART1_TX / DMA1 Channel 2</td><td>Memory→Peripheral, Normal, Byte, MemInc Enable, PeriphInc Disable, High</td><td>Duty/RPM/sektör komut paketini ESP’ye yollar.</td></tr>
+      <tr><td>LPUART1_TX / DMA1 Channel 3</td><td>Memory→Peripheral, Normal, Byte, MemInc Enable, PeriphInc Disable, Medium</td><td>UI telemetrisini CPU’yu byte byte bekletmeden gönderir.</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Memory Increment</strong>, DMA’nın paket içindeki sonraki byte’a ilerlemesini sağlar. <strong>Peripheral Increment</strong> kapalıdır çünkü UART veri register adresi sabittir. <strong>Byte alignment</strong>, UART paketinin 8 bitlik yapısıyla eşleşir. <strong>Normal mode</strong>, bir paket tamamlanınca DMA’nın yazılım tarafından yeniden kurulmasına uygundur.</p>
+
+  <h2>6. LPUART1 — desktop UI hattı</h2>
+  <p><code>PA2/PA3</code> üzerindeki LPUART1, Nucleo’nun ST-LINK Virtual COM Port bağlantısını kullanır. UI telemetrisi 1 kHz hızında ve 4 Mbaud ile gönderilir. STM–ESP hattından ayrı olduğu için UI açık olmasa bile PI–plant döngüsü çalışabilir.</p>
+  <div class="note">UART’ta bir 8N1 byte yaklaşık 10 hat biti kullanır. 4 Mbaud teorik olarak yaklaşık 400 kB/s verir. Örneğin 160 byte uzunluğundaki ASCII UI satırı 1 kHz’de yaklaşık 160 kB/s veri ve 1.6 Mbit/s hat yükü oluşturur. Bu çalışır, ancak uzun satırlar yerine ikili paket kullanmak daha fazla zaman payı bırakır.</div>
+
+  <h2 class="pagebreak">7. TIM6 — 1 kHz deterministik kontrol zamanı</h2>
+  <p>TIM6 ekranında ayrı “Internal Clock” açılır menüsünün görünmemesi normaldir. <code>Activated</code> işaretlendiğinde CubeMX iç timer clock kaynağını etkinleştirir. <code>.ioc</code> kaydındaki <code>VP_TIM6_VS_ClockSourceINT=Enable_Timer</code> satırı bunu doğrular.</p>
+  <table>
+    <thead><tr><th>Ayar</th><th>Değer</th><th>Neden?</th></tr></thead>
+    <tbody>
+      <tr><td>Activated</td><td>Açık</td><td>TIM6 iç zaman tabanını etkinleştirir.</td></tr>
+      <tr><td>Prescaler (PSC)</td><td><code>169</code></td><td>170 MHz timer clock, PSC+1=170 ile 1 MHz sayaç clock’una bölünür.</td></tr>
+      <tr><td>Counter Period (ARR)</td><td><code>999</code></td><td>1 MHz, ARR+1=1000 sayım sonunda update üretir: 1 ms.</td></tr>
+      <tr><td>Counter Mode</td><td><code>Up</code></td><td>Temel periyodik zaman tabanı için.</td></tr>
+      <tr><td>One Pulse Mode</td><td>Kapalı</td><td>Timer tek atıştan sonra durmaz; sürekli 1 kHz çalışır.</td></tr>
+      <tr><td>Auto-reload preload</td><td>Kapalı</td><td>Periyot çalışma sırasında değiştirilmez.</td></tr>
+      <tr><td>DMA</td><td>Kapalı</td><td>Her update olayında bellek transferi gerekmez.</td></tr>
+      <tr><td>NVIC</td><td>TIM6_DAC interrupt açık</td><td>Her 1 ms’de kontrol görevini tetikler.</td></tr>
+    </tbody>
+  </table>
+  <div class="formula">f = 170,000,000 / ((169 + 1) × (999 + 1)) = 1,000 Hz</div>
+  <figure>
+    <img src="stm32_esp_hil_cubemx_assets/07_tim6.png" alt="TIM6 1 kHz ayarları">
+    <figcaption>Şekil 7 — TIM6 Activated, PSC=169 ve ARR=999; iç clock seçimi etkinleştirme ile otomatik yapılır.</figcaption>
+  </figure>
+
+  <h2>8. NVIC öncelikleri</h2>
+  <p>Cortex-M’de küçük sayı daha yüksek öncelik demektir. Önerilen dağılım aşağıdadır:</p>
+  <table>
+    <thead><tr><th>Kesme</th><th>Preemption priority</th><th>Gerekçe</th></tr></thead>
+    <tbody>
+      <tr><td>TIM6_DAC</td><td><code>1</code></td><td>1 ms kontrol zamanının gecikmesini düşük tutar.</td></tr>
+      <tr><td>USART1 ve USART1 RX/TX DMA</td><td><code>2</code></td><td>HIL geri besleme paketleri UI’den daha önemlidir.</td></tr>
+      <tr><td>LPUART1 TX DMA</td><td><code>3</code></td><td>UI telemetrisi kontrol döngüsünü kesmemelidir.</td></tr>
+    </tbody>
+  </table>
+  <div class="warning"><strong>Son kontrol gerekli:</strong> Belge hazırlanırken kaydedilmiş <code>.ioc</code> dosyasında TIM6, USART1 ve üç DMA kesmesinin preemption değeri hâlâ <code>0</code> görünüyordu. Aynı öncelikte çalışmaları sistemi bozmaz fakat yukarıdaki amaçlanan hiyerarşiyi sağlamaz. Kod üretmeden önce NVIC ekranında değerleri 1/2/3 olarak kontrol edin ve <code>.ioc</code> dosyasını kaydedin.</div>
+
+  <h2>9. Her 1 ms’de gerçekleşecek sıra</h2>
+  <ol>
+    <li>STM32 üç Hall girişini okur ve geçerli sektörü/faz çiftini belirler.</li>
+    <li>TIM2 sayaç farkından gerçek encoder RPM değerini hesaplar.</li>
+    <li>ESP32’den en son gelen modellenmiş ölçüm akımını alır.</li>
+    <li>Akım PI, referans ile ölçüm farkından duty üretir; limit ve anti-windup uygulanır.</li>
+    <li>STM32 duty + gerçek RPM + sektör + sıra numarasını USART1 ile ESP32’ye yollar.</li>
+    <li>ESP32 elektriksel modeli bir sonraki akım değerini hesaplayıp STM32’ye döndürür.</li>
+    <li>STM32 Hall, RPM, ölçüm akımı, duty ve hata sayaçlarını LPUART1 ile UI’ye yollar.</li>
+  </ol>
+  <p>Bu akışta doğal olarak yaklaşık bir örneklik geri besleme gecikmesi vardır. PI ayarları değerlendirilirken 1 ms örnekleme ve UART gecikmesi birlikte dikkate alınmalıdır.</p>
+
+  <h2>10. Bu HIL testi neyi kanıtlar?</h2>
+  <div class="success"><strong>Somut olarak ölçülebilecekler:</strong> yükselme süresi, aşım, yerleşme süresi, kalıcı hata, duty doyumu, integratör davranışı/anti-windup, farklı RPM ve akım referanslarında kararlılık, paket gecikmesi/kaybı ve timeout güvenliği.</div>
+  <div class="warning"><strong>Kanıtlamadıkları:</strong> gerçek MOSFET/gate-driver anahtarlaması, dead-time, gerçek faz akımı dalgalanması, ADC ve akım sensörü doğruluğu, güç katı korumaları, EMI ve termal davranış. ESP modelinin R/L/Ke/Vbus parametreleri gerçeğe yaklaştıkça PI hakkında çıkarılan sonuçlar daha anlamlı olur.</div>
+
+  <h2>11. Kod üretmeden önce kısa kontrol listesi</h2>
+  <ul class="checklist">
+    <li>PA0/PA1: TIM2 Encoder Mode, TI1+TI2, filtre 6.</li>
+    <li>TIM2 PSC=0, ARR=4294967295; TIM2 NVIC ve DMA kapalı.</li>
+    <li>PC4/PC5: USART1 TX/RX, 4 Mbaud, 8N1, çift yönlü.</li>
+    <li>USART1 RX ve TX DMA: Normal, Byte, MemInc açık, High.</li>
+    <li>PA2/PA3: LPUART1 UI hattı, 4 Mbaud.</li>
+    <li>LPUART1 TX DMA: Normal, Byte, MemInc açık, Medium.</li>
+    <li>TIM6 Activated, PSC=169, ARR=999, One Pulse kapalı.</li>
+    <li>TIM6_DAC NVIC açık; öncelikler 1/2/3 olarak doğrulandı.</li>
+    <li>Project Manager → “Keep User Code when re-generating” açık.</li>
+    <li><code>.ioc</code> kaydedildi; ardından Generate Code çalıştırılacak.</li>
+  </ul>
+
+  <footer>Bu belge, kullanıcı tarafından gönderilen CubeMX ekran görüntüleri ve Real_motor_read_hall.ioc yapılandırması esas alınarak hazırlanmıştır.</footer>
+</main>
+</body>
+</html>

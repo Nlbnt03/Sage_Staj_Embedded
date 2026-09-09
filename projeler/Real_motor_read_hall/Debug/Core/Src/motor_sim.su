@@ -1,3 +1,0 @@
-../Core/Src/motor_sim.c:7:14:Clamp	24	static
-../Core/Src/motor_sim.c:16:6:MotorSim_Init	88	static
-../Core/Src/motor_sim.c:21:6:MotorSim_Step	88	static

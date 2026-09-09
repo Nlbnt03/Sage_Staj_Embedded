@@ -1,0 +1,4 @@
+../Core/Src/current_pi_sim.c:7:14:Clamp	4
+../Core/Src/current_pi_sim.c:16:18:CurrentPi_DecodeHall	1
+../Core/Src/current_pi_sim.c:33:6:CurrentPi_Init	1
+../Core/Src/current_pi_sim.c:38:6:CurrentPi_Step	9

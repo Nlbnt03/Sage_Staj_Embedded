@@ -1,0 +1,11 @@
+../Core/Src/esp_hil_protocol.c:5:13:PutU16Le	1
+../Core/Src/esp_hil_protocol.c:11:13:PutU32Le	1
+../Core/Src/esp_hil_protocol.c:19:17:GetU16Le	1
+../Core/Src/esp_hil_protocol.c:25:17:GetU32Le	1
+../Core/Src/esp_hil_protocol.c:33:13:ParserReset	1
+../Core/Src/esp_hil_protocol.c:39:13:ParserRejectHeader	2
+../Core/Src/esp_hil_protocol.c:50:10:EspHil_Crc16CcittFalse	4
+../Core/Src/esp_hil_protocol.c:69:9:EspHil_SequenceIsNewer	3
+../Core/Src/esp_hil_protocol.c:75:6:EspHilParser_Init	1
+../Core/Src/esp_hil_protocol.c:80:8:EspHil_EncodeCommand	4
+../Core/Src/esp_hil_protocol.c:112:9:EspHilParser_PushByte	17

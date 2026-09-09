@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
-#include "motor_sim.h"
+#include "current_pi_sim.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +35,7 @@
 #define ENCODER_PPR             4096U
 /* TIM_ENCODERMODE_TI12 = 4x decoding: her PPR cizgisi 4 sayima karsilik gelir. */
 #define ENCODER_COUNTS_PER_REV  (ENCODER_PPR * 4U)
+#define UART_TELEMETRY_PERIOD_MS 1U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,129 +45,116 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef hlpuart1;
+UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_lpuart1_tx;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
+
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN PV */
-#if MOTOR_SIMULATION
-/* STM32CubeIDE Live Expressions uzerinden girisler degistirilebilir. */
-volatile MotorSimInputs g_sim_inputs = MOTOR_SIM_DEFAULT_INPUTS;
-volatile MotorSimState g_sim_state;
-volatile uint32_t g_sim_skipped_steps = 0U;
-volatile uint32_t g_sim_uart_errors = 0U;
-static MotorSimState motorSim;
-#endif
+/* STM32CubeIDE Live Expressions veya daha sonra eklenecek UI komut katmani
+   uzerinden bu ayarlar degistirilebilir. */
+volatile CurrentPiInputs g_control_inputs = CURRENT_PI_DEFAULT_INPUTS;
+volatile CurrentPiState g_control_state;
+volatile uint32_t g_control_skipped_steps = 0U;
+volatile uint32_t g_uart_errors = 0U;
+volatile uint32_t g_uart_dropped_frames = 0U;
+static CurrentPiState currentPi;
+static char telemetryMsg[256];
+static uint32_t telemetrySequence = 0U;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_LPUART1_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#if MOTOR_SIMULATION
-static void Print_Simulation_State(void)
-{
-  char msg[320];
-  /* Her satir tek ornek: CRLF ile biter, alanlar boslukla ayrilir.
-     nano printf %f gerektirmez: x10 / 10, x10000 / 10000 olarak okunur.
-     Ayarlar, RPM ile ayni sim adiminda kullanilmis degerlerdir. */
-  int len = snprintf(msg, sizeof(msg),
-      "SIM t=%lu target=%ld rpm=%ld err=%ld duty_x10=%ld "
-      "model_rpm=%ld enc_cnt=%lu integral_x10=%ld "
-      "kp_x10000=%ld ki_x10000=%ld kd_x10000=%ld load_rpm=%ld enabled=%lu\r\n",
-      (unsigned long)motorSim.elapsed_ms, (long)motorSim.target_rpm,
-      (long)motorSim.measured_rpm, (long)motorSim.error_rpm,
-      (long)(motorSim.duty_percent * 10.0f + 0.5f),
-      (long)motorSim.model_rpm, (unsigned long)motorSim.encoder_count,
-      (long)(motorSim.integral_percent * 10.0f + 0.5f),
-      (long)(motorSim.applied_inputs.kp * 10000.0f + 0.5f),
-      (long)(motorSim.applied_inputs.ki * 10000.0f + 0.5f),
-      (long)(motorSim.applied_inputs.kd * 10000.0f + 0.5f),
-      (long)motorSim.applied_inputs.load_rpm,
-      (unsigned long)motorSim.applied_inputs.enabled);
-
-  /* En uzun satir da 115200 baud / 8N1'de 30 ms'den kisa surer.
-     Hata durumunda eksik/tasmis bir ornegi UI'ya gonderme. */
-  if (len <= 0 || len >= (int)sizeof(msg))
-  {
-    ++g_sim_uart_errors;
-    return;
-  }
-  if (HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg, (uint16_t)len, 40U) != HAL_OK)
-  {
-    ++g_sim_uart_errors;
-  }
-}
-#else
-
-/**
-  * @brief  3 Hall pinini okuyup tek bir 3-bit degere paketler.
-  *         bit0 = HALL0 (PC0), bit1 = HALL1 (PC1), bit2 = HALL2 (PB0)
-  * @retval 0-7 arasi hall durumu (BLDC icin gecerli degerler 1-6'dir)
-  */
 static uint8_t Read_Hall_State(void)
 {
-  uint8_t h0 = HAL_GPIO_ReadPin(HALL0_GPIO_Port, HALL0_Pin);
-  uint8_t h1 = HAL_GPIO_ReadPin(HALL1_GPIO_Port, HALL1_Pin);
-  uint8_t h2 = HAL_GPIO_ReadPin(HALL2_GPIO_Port, HALL2_Pin);
+  uint8_t h0 = (uint8_t)HAL_GPIO_ReadPin(HALL0_GPIO_Port, HALL0_Pin);
+  uint8_t h1 = (uint8_t)HAL_GPIO_ReadPin(HALL1_GPIO_Port, HALL1_Pin);
+  uint8_t h2 = (uint8_t)HAL_GPIO_ReadPin(HALL2_GPIO_Port, HALL2_Pin);
 
   return (uint8_t)((h2 << 2) | (h1 << 1) | h0);
 }
 
 /**
-  * @brief  Hall durumunu okunabilir bir satir olarak LPUART1 uzerinden yollar.
-  */
-static void Print_Hall_State(uint8_t hallState)
-{
-  char msg[48];
-  int len = snprintf(msg, sizeof(msg), "HALL: %d%d%d (state=%u)\r\n",
-                      (hallState >> 2) & 1, (hallState >> 1) & 1, hallState & 1,
-                      hallState);
-
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
-}
-
-/**
-  * @brief  TIM2'nin 32-bit encoder sayacini okur (yon dahil, isaretli).
+  * @brief  TIM2'nin 32-bit encoder sayacini okur.
   */
 static int32_t Read_Encoder_Count(void)
 {
   return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
 }
 
-/**
-  * @brief  Encoder sayacini konum (derece) ve hiz (RPM) ile birlikte LPUART1
-  *         uzerinden yollar. RPM, en son iki okuma arasindaki sayim farkindan
-  *         hesaplanir; delta_ms=0 ise (ilk okuma) rpm=0 yazilir.
-  *         --specs=nano.specs printf %f'yi desteklemedigi icin tum hesap
-  *         tam sayi (64-bit ara sonuc) ile yapilir.
-  */
-static void Print_Encoder_State(int32_t count, int32_t delta_count, uint32_t delta_ms)
+static char Phase_Char(MotorPhase phase)
 {
-  int32_t degrees = (int32_t)(((int64_t)count * 360LL) / (int64_t)ENCODER_COUNTS_PER_REV);
-  int32_t rpm = 0;
-  char msg[64];
-  int len;
-
-  if (delta_ms > 0U)
-  {
-    rpm = (int32_t)(((int64_t)delta_count * 60000LL) /
-                     ((int64_t)ENCODER_COUNTS_PER_REV * (int64_t)delta_ms));
-  }
-
-  len = snprintf(msg, sizeof(msg), "ENC: cnt=%ld deg=%ld rpm=%ld\r\n",
-                 (long)count, (long)degrees, (long)rpm);
-
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)msg, (uint16_t)len, HAL_MAX_DELAY);
+  static const char names[] = "-ABC";
+  return (phase <= PHASE_C) ? names[phase] : '-';
 }
 
-#endif /* MOTOR_SIMULATION */
+/**
+  * @brief  Hall, sektor, gercek encoder/RPM ve sanal PI/akim durumunu UI'ya
+  *         tek ve kolay ayrıştırılabilir UART satiri olarak yollar.
+  */
+static void Print_Telemetry(int32_t encoder_count, uint32_t timestamp_ms)
+{
+  int len;
+
+  if (hlpuart1.gState != HAL_UART_STATE_READY)
+  {
+    ++g_uart_dropped_frames;
+    return;
+  }
+
+  len = snprintf(telemetryMsg, sizeof(telemetryMsg),
+      "DATA t=%lu seq=%lu hall=%u sector=%u high=%c low=%c float=%c valid=%u "
+      "enc=%ld rpm=%ld iref_ma=%ld fake_i_ma=%ld err_ma=%ld "
+      "duty_x10=%ld integral_x10=%ld bemf_mv=%ld applied_mv=%ld "
+      "enabled=%lu drop=%lu\r\n",
+      (unsigned long)timestamp_ms,
+      (unsigned long)telemetrySequence,
+      (unsigned int)currentPi.hall_state,
+      (unsigned int)currentPi.commutation.sector,
+      Phase_Char(currentPi.commutation.high_phase),
+      Phase_Char(currentPi.commutation.low_phase),
+      Phase_Char(currentPi.commutation.floating_phase),
+      (unsigned int)currentPi.commutation.valid,
+      (long)encoder_count,
+      (long)currentPi.real_rpm,
+      (long)(currentPi.target_current_a * 1000.0f),
+      (long)(currentPi.fake_current_a * 1000.0f),
+      (long)(currentPi.error_a * 1000.0f),
+      (long)(currentPi.duty_percent * 10.0f),
+      (long)(currentPi.integral_percent * 10.0f),
+      (long)(currentPi.back_emf_v * 1000.0f),
+      (long)(currentPi.applied_voltage_v * 1000.0f),
+      (unsigned long)currentPi.applied_inputs.enabled,
+      (unsigned long)g_uart_dropped_frames);
+
+  if (len <= 0 || len >= (int)sizeof(telemetryMsg) ||
+      HAL_UART_Transmit_DMA(&hlpuart1, (uint8_t *)telemetryMsg,
+                            (uint16_t)len) != HAL_OK)
+  {
+    ++g_uart_errors;
+  }
+  else
+  {
+    ++telemetrySequence;
+  }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -198,80 +186,76 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_LPUART1_UART_Init();
+  MX_USART1_UART_Init();
   MX_TIM2_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-#if MOTOR_SIMULATION
-  uint32_t lastSimMs = HAL_GetTick();
-  uint32_t lastSimPrintMs = lastSimMs;
-  MotorSim_Init(&motorSim);
-  g_sim_state = motorSim;
-  /* TIM2 encoder baslatilmaz. PID cikisi sadece motor modeline verilir.
-     PWM, komutasyon ve motor surucu enable cikisi yoktur. */
-#else
-  uint8_t lastHallState = 0xFF; /* gecersiz baslangic degeri, ilk okumada mutlaka yazdirsin */
+  uint32_t lastControlMs = HAL_GetTick();
+  uint32_t lastEncoderSampleMs = lastControlMs;
+  uint32_t lastTelemetryMs = lastControlMs;
+  int32_t encoderCount;
   int32_t lastEncoderCount;
-  uint32_t lastEncoderPrintMs = HAL_GetTick();
+  float realRpm = 0.0f;
 
-  /* Encoder sayacini baslat: TIM2->CNT donen mile gore artar/azalir. */
-  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+  CurrentPi_Init(&currentPi);
+  if (HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  __HAL_TIM_SET_COUNTER(&htim2, 0U);
   lastEncoderCount = Read_Encoder_Count();
-  Print_Encoder_State(lastEncoderCount, 0, 0U);
-#endif
+  encoderCount = lastEncoderCount;
+  /* Motor surucusu/PWM cikisi yoktur. Hall ve encoder gercek giris; akim ve
+     duty STM32 icinde sayisal olarak simule edilir. */
+  g_control_state = currentPi;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-#if MOTOR_SIMULATION
     uint32_t nowMs = HAL_GetTick();
     uint32_t steps = 0U;
-    /* UART gecikmesinde sabit dt ile yetis; debugger duraklamasinda
-       sinirsiz sayida gecmis adim calistirma. Tick tasmasi unsigned'dir. */
-    while ((uint32_t)(nowMs - lastSimMs) >= MOTOR_SIM_STEP_MS && steps < 5U)
-    {
-      const MotorSimInputs inputs = g_sim_inputs;
-      MotorSim_Step(&motorSim, &inputs);
-      lastSimMs += MOTOR_SIM_STEP_MS;
-      ++steps;
-    }
-    if ((uint32_t)(nowMs - lastSimMs) >= MOTOR_SIM_STEP_MS)
-    {
-      g_sim_skipped_steps += (uint32_t)(nowMs - lastSimMs) / MOTOR_SIM_STEP_MS;
-      lastSimMs = nowMs;
-    }
-    g_sim_state = motorSim;
-    if ((uint32_t)(nowMs - lastSimPrintMs) >= 100U)
-    {
-      lastSimPrintMs = nowMs;
-      Print_Simulation_State();
-    }
-#else
     uint8_t hallState = Read_Hall_State();
 
-    if (hallState != lastHallState)
+    if ((uint32_t)(nowMs - lastEncoderSampleMs) >= CURRENT_PI_STEP_MS)
     {
-      Print_Hall_State(hallState);
-      lastHallState = hallState;
+      uint32_t deltaMs = nowMs - lastEncoderSampleMs;
+      int32_t deltaCount;
+
+      encoderCount = Read_Encoder_Count();
+      deltaCount = (int32_t)((uint32_t)encoderCount -
+                             (uint32_t)lastEncoderCount);
+      realRpm = ((float)deltaCount * 60000.0f) /
+                ((float)ENCODER_COUNTS_PER_REV * (float)deltaMs);
+      lastEncoderCount = encoderCount;
+      lastEncoderSampleMs = nowMs;
     }
 
-    if ((uint32_t)(HAL_GetTick() - lastEncoderPrintMs) >= 100U)
+    while ((uint32_t)(nowMs - lastControlMs) >= CURRENT_PI_STEP_MS &&
+           steps < 5U)
     {
-      int32_t encoderCount = Read_Encoder_Count();
-      uint32_t now_ms = HAL_GetTick();
-      uint32_t delta_ms = now_ms - lastEncoderPrintMs;
-
-      lastEncoderPrintMs = now_ms;
-      if (encoderCount != lastEncoderCount)
-      {
-        Print_Encoder_State(encoderCount, encoderCount - lastEncoderCount, delta_ms);
-        lastEncoderCount = encoderCount;
-      }
+      const CurrentPiInputs inputs = g_control_inputs;
+      CurrentPi_Step(&currentPi, &inputs, realRpm, hallState);
+      lastControlMs += CURRENT_PI_STEP_MS;
+      ++steps;
     }
+    if ((uint32_t)(nowMs - lastControlMs) >= CURRENT_PI_STEP_MS)
+    {
+      g_control_skipped_steps +=
+          (uint32_t)(nowMs - lastControlMs) / CURRENT_PI_STEP_MS;
+      lastControlMs = nowMs;
+    }
+    g_control_state = currentPi;
 
-#endif
-    HAL_Delay(1);
+    if ((uint32_t)(nowMs - lastTelemetryMs) >= UART_TELEMETRY_PERIOD_MS)
+    {
+      lastTelemetryMs = nowMs;
+      Print_Telemetry(encoderCount, nowMs);
+    }
+    __WFI();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -341,7 +325,7 @@ static void MX_LPUART1_UART_Init(void)
 
   /* USER CODE END LPUART1_Init 1 */
   hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 115200;
+  hlpuart1.Init.BaudRate = 4000000;
   hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
   hlpuart1.Init.StopBits = UART_STOPBITS_1;
   hlpuart1.Init.Parity = UART_PARITY_NONE;
@@ -373,15 +357,71 @@ static void MX_LPUART1_UART_Init(void)
 }
 
 /**
-  * @brief TIM2 Initialization Function (Encoder Mode)
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 4000000;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
   * @param None
   * @retval None
   */
 static void MX_TIM2_Init(void)
 {
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
   TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -407,6 +447,71 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 169;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 999;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+  /* DMA1_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 3, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+
 }
 
 /**
