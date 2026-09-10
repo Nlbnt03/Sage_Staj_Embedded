@@ -1,3 +1,13 @@
 .DS_Store
 **/.DS_Store
 ~$*
+
+# Python local environments and caches
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local runtime output
+*.log
